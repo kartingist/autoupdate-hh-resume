@@ -71,13 +71,12 @@ def get_access_token():
 
     except:
         for admin in admins:
-            send_message(chat_id=admin, title="Ошибка обновления токена", text=response.text)
+            send_message(chat_id=admin, title="Ошибка обновления токена", text='...')
 
 
 def send_request():
     with open('env', 'r') as file:
         access_token = file.read()
-        print(access_token)
     url = f'https://api.hh.ru/resumes/{resume_id}/publish'
     headers = {'Authorization': f'Bearer {access_token}',
                'HH-User-Agent': 'autoupdate-hh-resume/1.0 (awjon94@gmail.com)'}
@@ -100,7 +99,6 @@ def send_request():
             for admin in admins:
                 send_message(admin, 'Error', f'Problem with updating resume. Status code: {r.status_code}')
                 handle_error(r.json(), admin)
-                print(r.json())
             attempt_count += 1
             time.sleep(60)
         else:
