@@ -29,44 +29,49 @@ def handle_error(response_json, admin_id):
 
 
 def get_access_token():
-    cookies = {
-        '_xsrf': '967ac1b2f5c942d92f057f67dcbcb971',
-        'hhtoken': 'V2nMzzzpCyU19E4xuTfALS2pNnIT'
-    }
+    try:
+        cookies = {
+            '_xsrf': '967ac1b2f5c942d92f057f67dcbcb971',
+            'hhtoken': 'V2nMzzzpCyU19E4xuTfALS2pNnIT'
+        }
 
-    headers = {
-        'content-type': 'application/x-www-form-urlencoded',
-        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    }
+        headers = {
+            'content-type': 'application/x-www-form-urlencoded',
+            'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
 
-    params = {
-        'response_type': 'code',
-        'client_id': 'KATBUHAPQ19FBB96GTM8MV98VKGAQUP4BRM2R3G0GVBB57RRA4TNBSHQ3EH0Q0CL',
-    }
+        params = {
+            'response_type': 'code',
+            'client_id': 'KATBUHAPQ19FBB96GTM8MV98VKGAQUP4BRM2R3G0GVBB57RRA4TNBSHQ3EH0Q0CL',
+        }
 
-    data = {
-        'grant': '1',
-        '_xsrf': '967ac1b2f5c942d92f057f67dcbcb971',
-    }
-    response = requests.post('https://hh.ru/oauth/authorize', params=params, cookies=cookies, headers=headers,
-                             data=data)
-    code = response.history[-1].url.split("=")[-1]
+        data = {
+            'grant': '1',
+            '_xsrf': '967ac1b2f5c942d92f057f67dcbcb971',
+        }
+        response = requests.post('https://hh.ru/oauth/authorize', params=params, cookies=cookies, headers=headers,
+                                 data=data)
+        code = response.history[-1].url.split("=")[-1]
 
-    headers = {
-        'User-Agent': 'api-test-agent',
-        'Content-Type': 'application/x-www-form-urlencoded',
-    }
+        headers = {
+            'User-Agent': 'api-test-agent',
+            'Content-Type': 'application/x-www-form-urlencoded',
+        }
 
-    data = {
-        'grant_type': 'authorization_code',
-        'client_id': client_id,
-        'client_secret': client_secret,
-        'code': code,
-    }
+        data = {
+            'grant_type': 'authorization_code',
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'code': code,
+        }
 
-    response = requests.post('https://hh.ru/oauth/token', headers=headers, data=data)
-    with open('env', 'w') as file:
-        file.write(response.json().get('access_token'))
+        response = requests.post('https://hh.ru/oauth/token', headers=headers, data=data)
+        with open('env', 'w') as file:
+            file.write(response.json().get('access_token'))
+
+    except:
+        for admin in admins:
+            send_message(chat_id=admin, title="Ошибка обновления токена", text=response.text)
 
 
 def send_request():
@@ -84,7 +89,7 @@ def send_request():
         r = requests.post(url, headers=headers)
         if r.status_code == 403 and r.json().get('oauth_error') == 'token-expired':
             get_access_token()
-            attempt_count += 1
+            # attempt_count += 1
 
         elif r.status_code == 204:
             for admin in admins:
