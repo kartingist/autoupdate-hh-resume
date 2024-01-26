@@ -66,7 +66,7 @@ def get_access_token():
         }
 
         response = requests.post('https://hh.ru/oauth/token', headers=headers, data=data)
-        with open('env', 'w') as file:
+        with open('/root/python/autoupdate-hh-resume/env', 'w') as file:
             file.write(response.json().get('access_token'))
 
     except:
@@ -75,7 +75,7 @@ def get_access_token():
 
 
 def send_request():
-    with open('env', 'r') as file:
+    with open('/root/python/autoupdate-hh-resume/env', 'r') as file:
         access_token = file.read()
     url = f'https://api.hh.ru/resumes/{resume_id}/publish'
     headers = {'Authorization': f'Bearer {access_token}',
