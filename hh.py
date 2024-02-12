@@ -30,7 +30,7 @@ def handle_error(response_json, admin_id):
 
 def get_refresh_access_token():
     try:
-        with open('refresh_token', 'r') as file:
+        with open('/root/python/autoupdate-hh-resume/refresh_token', 'r') as file:
             refresh_token = file.read()
         headers = {
             'grant_type': '',
@@ -43,10 +43,10 @@ def get_refresh_access_token():
         }
 
         response = requests.post('https://hh.ru/oauth/token', headers=headers, data=data)
-        with open('refresh_token', 'w') as file:
+        with open('/root/python/autoupdate-hh-resume/refresh_token', 'w') as file:
             file.write(response.json().get('refresh_token'))
 
-        with open('./access_token', 'w') as file:
+        with open('/root/python/autoupdate-hh-resume/access_token', 'w') as file:
             file.write(response.json().get('access_token'))
 
     except:
@@ -55,7 +55,7 @@ def get_refresh_access_token():
 
 
 def send_request():
-    with open('access_token', 'r') as file:
+    with open('/root/python/autoupdate-hh-resume/access_token', 'r') as file:
         access_token = file.read()
     url = f'https://api.hh.ru/resumes/{resume_id}/publish'
     headers = {'Authorization': f'Bearer {access_token}',
