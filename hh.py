@@ -14,6 +14,8 @@ client_id = 'KATBUHAPQ19FBB96GTM8MV98VKGAQUP4BRM2R3G0GVBB57RRA4TNBSHQ3EH0Q0CL'
 client_secret = 'UQUEG1P6GRJJVLDL2U5PN5U58FHCLSVN1519TNARVPBRBMEVM9FPBRGAVKU457QP'
 resume_id = '7c896da7ff07cdf4bc0039ed1f594776395242'
 
+with open("/tmp/hh_cron_debug.log", "a") as log_file:
+    log_file.write("hh.py started from cron\n")
 
 def send_message(chat_id, title, text):
     bot.send_message(chat_id, f"{title}:\n {text}")
