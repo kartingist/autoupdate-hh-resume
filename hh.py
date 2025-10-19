@@ -3,7 +3,7 @@ import requests
 import logging
 import time
 import telebot
-
+#https://hh.ru/oauth/authorize?response_type=code&client_id=KATBUHAPQ19FBB96GTM8MV98VKGAQUP4BRM2R3G0GVBB57RRA4TNBSHQ3EH0Q0CL
 TOKEN = '6866886370:AAF-Xr196PsV3jJwgtljyHXxN1I0GWjPm_Y'
 bot = telebot.TeleBot(TOKEN)
 admins = [237736221]
