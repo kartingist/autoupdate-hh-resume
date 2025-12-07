@@ -7,7 +7,7 @@ client_secret = 'UQUEG1P6GRJJVLDL2U5PN5U58FHCLSVN1519TNARVPBRBMEVM9FPBRGAVKU457Q
 
 
 # Ссылка для авторизации (перейдите по ней в браузере, авторизуйтесь и скопируйте код из URL):
-# https://hh.ru/oauth/authorize?response_type=code&client_id=KATBUHAPQ19FBB96GTM8MV98VKGAQUP4BRM2R3G0GVBB57RRA4TNBSHQ3EH0Q0CL&redirect_uri=https://example.com/callback
+# https://hh.ru/oauth/authorize?response_type=code&client_id=KATBUHAPQ19FBB96GTM8MV98VKGAQUP4BRM2R3G0GVBB57RRA4TNBSHQ3EH0Q0CL&redirect_url=https://example.com/callback
 
 # Функция для обмена кода на токены
 def get_tokens_from_code(code):
