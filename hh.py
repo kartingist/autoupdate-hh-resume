@@ -33,4 +33,5 @@ if response1.status_code == 200:
     payload = {'resume': '7c896da7ff07cdf4bc0039ed1f594776395242',
                'undirectable': 'true'}
     response2 = session.post(command_url, data=payload, headers=headers)
+    print(response2.status_code)
 
