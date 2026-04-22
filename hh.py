@@ -15,8 +15,8 @@ xsrf_token = session.cookies.get('_xsrf')
 
 # 2. Логин
 payload = {
-    'username': 'your_login',
-    'password': 'your_password',
+    'username': 'karting-35@ya.ru',
+    'password': '359325Aw',
     'backurl': '/',
     'role': 'applicant',
     'remember': 'yes',
