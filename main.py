@@ -54,10 +54,12 @@ def run(playwright: Playwright) -> None:
             context.storage_state(path=AUTH_FILE)
             print("Сессия сохранена.")
 
-            # Возвращаемся на страницу резюме
-            page.goto("https://krasnodar.hh.ru/resume/7c896da7ff07cdf4bc0039ed1f594776395242")
+
         else:
             print("Авторизация уже активна.")
+
+        # Возвращаемся на страницу резюме
+        page.goto("https://krasnodar.hh.ru/resume/7c896da7ff07cdf4bc0039ed1f594776395242")
 
         # 3. Кликаем кнопку "Поднять"
         button = page.get_by_text("Поднять в поиске")
