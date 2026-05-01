@@ -41,9 +41,10 @@ def run(playwright: Playwright) -> None:
 
             print("Ждем завершения авторизации...")
             try:
-                # Ждем появления Личного кабинета или кнопки резюме (таймаут 15 сек)
-                page.wait_for_selector("[data-qa='mainmenu_applicant_profile'], .magritte-button", timeout=15000)
-            except Exception:
+                # Ожидаем конкретный span с текстом
+                page.wait_for_selector("span:has-text('Ваша активность')", timeout=15000)
+                print("Элемент найден, продолжаем...")
+            except Exception as e:
                 print("Не дождались селектора авторизации, сохраняем скриншот auth_error.png...")
                 if page:
                     page.screenshot(path="auth_error.png", full_page=True)
@@ -60,7 +61,7 @@ def run(playwright: Playwright) -> None:
 
         # 3. Кликаем кнопку "Поднять"
         button = page.get_by_text("Поднять в поиске")
-
+        print(button.text_content())
         try:
             button.wait_for(state="visible", timeout=5000)
             print("Кнопка найдена, нажимаю...")
