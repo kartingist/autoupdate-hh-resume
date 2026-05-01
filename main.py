@@ -74,7 +74,7 @@ def run(playwright: Playwright) -> None:
                 page.screenshot(path="button_error.png", full_page=True)
             raise
 
-        print("Завершение через 30 секунд...")
+        print("Готово")
         # page.wait_for_timeout(30000)
 
     except Exception as e:
