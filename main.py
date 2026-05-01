@@ -65,7 +65,7 @@ def run(playwright: Playwright) -> None:
         print("Кнопка 'Поднять в поиске' не появилась (возможно, она уже нажата или вы в headless режиме)")
 
     print("Завершение через 30 секунд...")
-    page.wait_for_timeout(30000)
+    # page.wait_for_timeout(30000)
 
     context.close()
     browser.close()
