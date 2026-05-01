@@ -6,7 +6,7 @@ AUTH_FILE = "hh_session.json"
 
 
 def run(playwright: Playwright) -> None:
-    browser = playwright.chromium.launch(headless=False)
+    browser = playwright.chromium.launch(headless=True)
 
     if os.path.exists(AUTH_FILE):
         print("Найдена сохраненная сессия...")
