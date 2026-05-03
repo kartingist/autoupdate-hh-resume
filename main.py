@@ -59,7 +59,7 @@ def run(playwright: Playwright) -> None:
             print("Авторизация уже активна.")
 
         # Возвращаемся на страницу резюме
-        page.goto("https://krasnodar.hh.ru/resume/7c896da7ff07cdf4bc0039ed1f594776395242")
+        page.goto("https://krasnodar.hh.ru/resume/7c896da7ff07cdf4bc0039ed1f594776395242", wait_until="domcontentloaded")
 
         # 3. Кликаем кнопку "Поднять"
         button = page.get_by_text("Поднять в поиске")
