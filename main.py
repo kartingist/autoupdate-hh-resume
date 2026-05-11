@@ -92,7 +92,14 @@ class HHAutomation:
     def raise_resume(self):
         logger.info("Переход на страницу резюме для поднятия...")
         self.page.goto(RESUME_URL, wait_until="domcontentloaded")
-
+        # 1. Закрываем баннер с куками, если он есть
+        try:
+            cookie_close = self.page.get_by_role("button", name="Понятно")
+            if cookie_close.is_visible(timeout=3000):
+                cookie_close.click()
+                logger.info("Баннер кук закрыт.")
+        except:
+            pass
         button = self.page.get_by_text("Поднять в поиске")
         try:
             # Ждем кнопку, чтобы убедиться, что страница прогрузилась
