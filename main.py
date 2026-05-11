@@ -1,95 +1,134 @@
 import os
 import re
-from playwright.sync_api import Playwright, sync_playwright
+import logging
+from datetime import datetime
+from playwright.sync_api import Playwright, sync_playwright, Page, BrowserContext, Browser
 
+# --- Настройка логирования ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# --- Конфигурация ---
 AUTH_FILE = "hh_session.json"
+RESUME_URL = "https://krasnodar.hh.ru/resume/7c896da7ff07cdf4bc0039ed1f594776395242"
+EMAIL = "karting-35@ya.ru"
+PASSWORD = "359325Aw"
 
 
-def run(playwright: Playwright) -> None:
-    browser = playwright.chromium.launch(headless=True)
+class HHAutomation:
+    def __init__(self, playwright: Playwright):
+        self.playwright = playwright
+        self.browser: Browser = None
+        self.context: BrowserContext = None
+        self.page: Page = None
 
-    context = None
-    page = None
+    def launch_browser(self, headless: bool = True):
+        logger.info("Запуск браузера...")
+        self.browser = self.playwright.chromium.launch(headless=headless)
 
-    try:
+        # Если запускаем через cron, лучше использовать полные пути к файлу сессии,
+        # но так как в cron у вас прописан `cd`, относительный путь AUTH_FILE сработает.
         if os.path.exists(AUTH_FILE):
-            print("Найдена сохраненная сессия...")
-            context = browser.new_context(storage_state=AUTH_FILE)
+            logger.info(f"Загрузка сохраненной сессии из {AUTH_FILE}...")
+            self.context = self.browser.new_context(storage_state=AUTH_FILE)
         else:
-            print("Сессия не найдена...")
-            context = browser.new_context()
+            logger.warning("Файл сессии не найден, будет создана новая сессия.")
+            self.context = self.browser.new_context()
 
-        page = context.new_page()
+        self.page = self.context.new_page()
 
-        # 1. Переходим на страницу резюме
-        page.goto("https://krasnodar.hh.ru/resume/7c896da7ff07cdf4bc0039ed1f594776395242",
-                  wait_until="domcontentloaded")
+    def _save_screenshot(self, name: str):
+        if self.page:
+            filename = f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            self.page.screenshot(path=filename, full_page=True)
+            logger.info(f"Скриншот ошибки сохранен: {filename}")
 
-        # 2. Проверяем, нужно ли логиниться
-        login_button = page.get_by_role("button", name="Войти").first
-
-        if login_button.is_visible():
-            print("Кнопка 'Войти' видна. Логинимся...")
-            login_button.click()
-            login_button.click()
-
-            page.locator("div").filter(has_text=re.compile(r"^Почта$")).first.click()
-            page.get_by_role("textbox").fill("karting-35@ya.ru")
-            page.get_by_role("button", name="Войти с паролем").click()
-            page.get_by_role("textbox").fill("359325Aw")
-            page.get_by_role("button", name="Войти", exact=True).click()
-
-            print("Ждем завершения авторизации...")
-            try:
-                # Ожидаем конкретный span с текстом
-                page.wait_for_selector("span:has-text('Ваша активность')", timeout=15000)
-                print("Элемент найден, продолжаем...")
-            except Exception as e:
-                print("Не дождались селектора авторизации, сохраняем скриншот auth_error.png...")
-                if page:
-                    page.screenshot(path="auth_error.png", full_page=True)
-                raise
-
-            # Сохраняем куки
-            context.storage_state(path=AUTH_FILE)
-            print("Сессия сохранена.")
-
-
-        else:
-            print("Авторизация уже активна.")
-
-        # Возвращаемся на страницу резюме
-        page.goto("https://krasnodar.hh.ru/resume/7c896da7ff07cdf4bc0039ed1f594776395242", wait_until="domcontentloaded")
-
-        # 3. Кликаем кнопку "Поднять"
-        button = page.get_by_text("Поднять в поиске")
-        print(button.text_content())
+    def is_logged_in(self) -> bool:
+        logger.info("Проверка статуса авторизации...")
         try:
-            button.wait_for(state="visible", timeout=5000)
-            print("Кнопка найдена, нажимаю...")
-            button.click()
-        except Exception:
-            print("Кнопка 'Поднять в поиске' не появилась, сохраняем скриншот button_error.png...")
-            if page:
-                page.screenshot(path="button_error.png", full_page=True)
+            self.page.goto(RESUME_URL, wait_until="domcontentloaded")
+            login_button = self.page.get_by_role("button", name="Войти").first
+
+            # Проверяем видимость кнопки "Войти" с коротким таймаутом
+            if login_button.is_visible(timeout=5000):
+                logger.info("Кнопка 'Войти' обнаружена. Нужно авторизоваться.")
+                return False
+
+            logger.info("Сессия валидна, мы внутри.")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при проверке авторизации: {e}")
+            return False
+
+    def perform_login(self):
+        logger.info("Начало процесса входа...")
+        try:
+            login_btn = self.page.get_by_role("button", name="Войти").first
+            login_btn.click()
+
+            self.page.locator("div").filter(has_text=re.compile(r"^Почта$")).first.click()
+            self.page.get_by_role("textbox").fill(EMAIL)
+
+            self.page.get_by_role("button", name="Войти с паролем").click()
+            self.page.get_by_role("textbox").fill(PASSWORD)
+            self.page.get_by_role("button", name="Войти", exact=True).click()
+
+            # Ждем появления признака успешного входа
+            self.page.wait_for_selector("span:has-text('Ваша активность')", timeout=15000)
+
+            # Сохраняем состояние сессии
+            self.context.storage_state(path=AUTH_FILE)
+            logger.info("Авторизация прошла успешно. Сессия обновлена и сохранена.")
+
+        except Exception as e:
+            logger.error(f"Критическая ошибка при попытке логина: {e}")
+            self._save_screenshot("login_failed")
             raise
 
-        print("Готово")
-        # page.wait_for_timeout(30000)
+    def raise_resume(self):
+        logger.info("Переход на страницу резюме для поднятия...")
+        self.page.goto(RESUME_URL, wait_until="domcontentloaded")
 
-    except Exception as e:
-        print(f"\n[КРИТИЧЕСКАЯ ОШИБКА] {e}")
-        if page:
-            page.screenshot(path="critical_error.png", full_page=True)
-            print("Скриншот с ошибкой сохранен в файл 'critical_error.png'")
-        raise
+        button = self.page.get_by_text("Поднять в поиске")
+        try:
+            # Ждем кнопку, чтобы убедиться, что страница прогрузилась
+            button.wait_for(state="visible", timeout=7000)
+            logger.info("Кнопка 'Поднять в поиске' доступна. Нажимаю...")
+            button.click()
+            logger.info("РЕЗЮМЕ УСПЕШНО ПОДНЯТО!")
+        except Exception:
+            logger.warning("Кнопка 'Поднять в поиске' не найдена. Возможно, время еще не пришло.")
+            self._save_screenshot("button_not_available")
 
-    finally:
-        if context:
-            context.close()
-        if browser:
-            browser.close()
+    def close(self):
+        if self.context: self.context.close()
+        if self.browser: self.browser.close()
+        logger.info("Браузер закрыт, ресурсы освобождены.")
 
 
-with sync_playwright() as playwright:
-    run(playwright)
+def main():
+    logger.info("=== ЗАПУСК СКРИПТА ПО РАСПИСАНИЮ (CRON) ===")
+
+    with sync_playwright() as playwright:
+        hh = HHAutomation(playwright)
+        try:
+            hh.launch_browser(headless=True)
+
+            if not hh.is_logged_in():
+                hh.perform_login()
+
+            hh.raise_resume()
+
+        except Exception as e:
+            logger.critical(f"Скрипт завершился с ошибкой: {e}")
+        finally:
+            hh.close()
+            logger.info("=== РАБОТА ЗАВЕРШЕНА ===\n")
+
+
+if __name__ == "__main__":
+    main()
