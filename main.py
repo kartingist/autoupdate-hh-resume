@@ -69,6 +69,8 @@ class HHAutomation:
         try:
             login_btn = self.page.get_by_role("button", name="Войти").first
             login_btn.click()
+            login_btn = self.page.get_by_role("button", name="Войти").first
+            login_btn.click()
 
             self.page.locator("div").filter(has_text=re.compile(r"^Почта$")).first.click()
             self.page.get_by_role("textbox").fill(EMAIL)
@@ -128,7 +130,7 @@ def main():
             if not hh.is_logged_in():
                 hh.perform_login()
 
-            hh.raise_resume()
+            # hh.raise_resume()
 
         except Exception as e:
             logger.critical(f"Скрипт завершился с ошибкой: {e}")
