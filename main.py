@@ -89,10 +89,6 @@ class HHAutomation:
             self.context.storage_state(path=AUTH_FILE)
             logger.info("Авторизация прошла успешно. Сессия обновлена и сохранена.")
 
-            # Сохраняем состояние сессии
-            self.context.storage_state(path=AUTH_FILE)
-            logger.info("Авторизация прошла успешно. Сессия обновлена и сохранена.")
-
         except Exception as e:
             logger.error(f"Критическая ошибка при попытке логина: {e}")
             self._save_screenshot("login_failed")
@@ -137,7 +133,7 @@ def main():
             if not hh.is_logged_in():
                 hh.perform_login()
 
-            # hh.raise_resume()
+            hh.raise_resume()
 
         except Exception as e:
             logger.critical(f"Скрипт завершился с ошибкой: {e}")
