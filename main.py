@@ -79,8 +79,15 @@ class HHAutomation:
             self.page.get_by_role("textbox").fill(PASSWORD)
             self.page.get_by_role("button", name="Войти", exact=True).click()
 
-            # Ждем появления признака успешного входа
-            self.page.wait_for_selector("span:has-text('Ваша активность')", timeout=15000)
+            # Вместо старого wait_for_selector используем пуленепробиваемый get_by_text c регулярным выражением
+            logger.info("Ждем появления вкладки 'Резюме и профиль'...")
+
+            # Регулярное выражение r"Резюме\s+и\s+профиль" найдет текст, даже если там неразрывный пробел (&nbsp;)
+            self.page.get_by_text(re.compile(r"Резюме\s+и\s+профиль")).wait_for(state="visible", timeout=15000)
+
+            # Сохраняем состояние сессии
+            self.context.storage_state(path=AUTH_FILE)
+            logger.info("Авторизация прошла успешно. Сессия обновлена и сохранена.")
 
             # Сохраняем состояние сессии
             self.context.storage_state(path=AUTH_FILE)
