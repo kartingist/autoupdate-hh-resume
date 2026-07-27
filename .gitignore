@@ -1,7 +1,18 @@
-*.png
+# Environment & Secret Credentials
+.env
+
+# Dynamic Configuration & Sessions
+resumes_config.json
+hh_session.json
+
+# Logs & Screenshots
 *.log
+*.png
+cron_log.log
+
+# Virtual Environment & Python Caches
 venv/
 __pycache__/
-hh_session.json
+*.pyc
 SERVICE
 new_crontab.txt

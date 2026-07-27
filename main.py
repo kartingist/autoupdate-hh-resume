@@ -7,7 +7,7 @@ import argparse
 from datetime import datetime
 from playwright.sync_api import Playwright, sync_playwright, Page, BrowserContext, Browser
 
-# --- Настройка логирования (ТОЛЬКО stdout, без продублированных FileHandler) ---
+# --- Настройка логирования ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUTH_FILE = os.path.join(BASE_DIR, "hh_session.json")
 CONFIG_FILE = os.path.join(BASE_DIR, "resumes_config.json")
+ENV_FILE = os.path.join(BASE_DIR, ".env")
+
+def load_env_file():
+    if os.path.exists(ENV_FILE):
+        try:
+            with open(ENV_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ[k.strip()] = v.strip().strip("'\"")
+        except Exception as e:
+            logger.error(f"Ошибка загрузки .env файла: {e}")
+
+load_env_file()
 
 def load_resumes_config():
     if os.path.exists(CONFIG_FILE):
@@ -27,11 +42,11 @@ def load_resumes_config():
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    return {"auth": {"email": "karting-35@ya.ru", "password": "359325Aw"}, "resumes": data}
+                    return {"auth": {"email": "", "password": ""}, "resumes": data}
                 return data
         except Exception as e:
             logger.error(f"Ошибка чтения конфига резюме: {e}")
-    return {"auth": {"email": "karting-35@ya.ru", "password": "359325Aw"}, "resumes": []}
+    return {"auth": {"email": "", "password": ""}, "resumes": []}
 
 def update_resume_status(resume_id: str, last_time: str, last_result: str):
     cfg_data = load_resumes_config()
@@ -163,9 +178,13 @@ class HHAutomation:
 def run_update_for_resume(target_id=None):
     cfg_data = load_resumes_config()
     auth_info = cfg_data.get("auth", {})
-    email = auth_info.get("email") or "karting-35@ya.ru"
-    password = auth_info.get("password") or "359325Aw"
+    email = auth_info.get("email") or os.environ.get("HH_EMAIL", "")
+    password = auth_info.get("password") or os.environ.get("HH_PASSWORD", "")
     resumes_list = cfg_data.get("resumes", [])
+
+    if not email or not password:
+        logger.error("Логин и пароль HH.ru не заданы ни в .env, ни в конфигурации!")
+        return
 
     if not resumes_list:
         logger.error("Список резюме пуст.")

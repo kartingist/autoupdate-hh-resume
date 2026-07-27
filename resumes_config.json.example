@@ -1,0 +1,23 @@
+{
+  "auth": {
+    "email": "",
+    "password": ""
+  },
+  "resumes": [
+    {
+      "id": "resume1",
+      "name": "Основное резюме",
+      "url": "https://hh.ru/resume/YOUR_RESUME_ID",
+      "enabled": true,
+      "schedule": [
+        "07:00",
+        "11:01",
+        "15:02",
+        "19:03",
+        "23:04"
+      ],
+      "last_time": "-",
+      "last_result": "Готово к настройке"
+    }
+  ]
+}
