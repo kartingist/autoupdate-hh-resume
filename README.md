@@ -43,7 +43,7 @@ autoupdate-hh-resume/
 
 ### 2. Клонирование и настройка окружения
 ```bash
-git clone https://github.com/<your-username>/autoupdate-hh-resume.git
+git clone https://github.com/kartingist/autoupdate-hh-resume.git
 cd autoupdate-hh-resume
 
 # Создание виртуального окружения
