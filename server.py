@@ -79,7 +79,7 @@ def sync_crontab_with_config(cfg_data):
                 try:
                     h = int(parts[0])
                     m = int(parts[1])
-                    cron_line = f"{m} {h} * * * cd {BASE_DIR} && {VENV_PYTHON} main.py --resume-id {resume_id} >> {log_file} 2>&1"
+                    cron_line = f"{m} {h} * * * cd {BASE_DIR} && {VENV_PYTHON} main.py --resume-id {resume_id}"
                     cron_lines.append(cron_line)
                 except ValueError:
                     pass
@@ -109,7 +109,7 @@ def run_hh_update_thread(resume_id):
         log_file = os.path.join(BASE_DIR, f"{resume_id}.log")
         cron_user = os.environ.get("HH_CRON_USER") or os.environ.get("SUDO_USER")
         sudo_prefix = f"sudo -u {cron_user} " if (cron_user and os.geteuid() == 0) else ""
-        cmd = f"cd {BASE_DIR} && {sudo_prefix}{VENV_PYTHON} main.py --resume-id {resume_id} >> {log_file} 2>&1"
+        cmd = f"cd {BASE_DIR} && {sudo_prefix}{VENV_PYTHON} main.py --resume-id {resume_id}"
         subprocess.run(cmd, shell=True, check=True)
     except Exception as e:
         print(f"Error running update for {resume_id}:", e)

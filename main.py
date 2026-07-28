@@ -8,13 +8,23 @@ from datetime import datetime
 from playwright.sync_api import Playwright, sync_playwright, Page, BrowserContext, Browser
 
 # --- Настройка логирования ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    stream=sys.stdout
-)
 logger = logging.getLogger(__name__)
+def setup_logger(target_id=None):
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+
+    if target_id:
+        log_file = os.path.join(BASE_DIR, f"{target_id}.log")
+        fh = logging.FileHandler(log_file, encoding='utf-8')
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
+setup_logger()
 
 # --- Конфигурация ---
 def load_env_file():
@@ -295,11 +305,7 @@ class HHAutomation:
 
 
 def run_update_for_resume(target_id=None):
-    if target_id:
-        log_file = os.path.join(BASE_DIR, f"{target_id}.log")
-        fh = logging.FileHandler(log_file, encoding='utf-8')
-        fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
-        logger.addHandler(fh)
+    setup_logger(target_id)
     cfg_data = load_resumes_config()
     auth_info = cfg_data.get("auth", {})
     email = auth_info.get("email") or os.environ.get("HH_EMAIL", "")
