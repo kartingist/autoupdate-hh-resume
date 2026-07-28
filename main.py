@@ -78,17 +78,32 @@ class HHAutomation:
         self.page: Page = None
 
     def launch_browser(self, headless: bool = True):
-        logger.info("Запуск браузера Chromium...")
-        self.browser = self.playwright.chromium.launch(headless=headless)
+        logger.info("Запуск браузера Chromium с режимом Stealth...")
+        self.browser = self.playwright.chromium.launch(
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
+
+        user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
         if os.path.exists(AUTH_FILE):
             logger.info(f"Загрузка сохраненной сессии из {AUTH_FILE}...")
-            self.context = self.browser.new_context(storage_state=AUTH_FILE)
+            self.context = self.browser.new_context(
+                storage_state=AUTH_FILE,
+                user_agent=user_agent,
+                viewport={"width": 1280, "height": 800},
+                locale="ru-RU"
+            )
         else:
             logger.warning("Файл сессии не найден, будет создана новая сессия.")
-            self.context = self.browser.new_context()
+            self.context = self.browser.new_context(
+                user_agent=user_agent,
+                viewport={"width": 1280, "height": 800},
+                locale="ru-RU"
+            )
 
         self.page = self.context.new_page()
+        self.page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     def _save_screenshot(self, name: str):
         if self.page:
@@ -115,21 +130,68 @@ class HHAutomation:
     def perform_login(self):
         logger.info(f"Начало процесса входа для {self.email}...")
         try:
-            login_btn = self.page.get_by_role("button", name="Войти").first
-            login_btn.click()
-            login_btn = self.page.get_by_role("button", name="Войти").first
-            login_btn.click()
+            if "account/login" not in self.page.url:
+                self.page.goto("https://hh.ru/account/login?role=applicant", wait_until="domcontentloaded")
+            self.page.wait_for_timeout(2000)
 
-            self.page.locator("div").filter(has_text=re.compile(r"^Почта$")).first.click()
-            self.page.get_by_role("textbox").fill(self.email)
+            # Ensure Applicant role card is selected
+            try:
+                applicant_radio = self.page.locator("[data-qa*='APPLICANT']").first
+                if applicant_radio.is_visible(timeout=2000):
+                    applicant_radio.click(force=True)
+                    logger.info("Выбран тип аккаунта 'Соискатель'.")
+            except Exception as e:
+                logger.warning(f"Выбор типа аккаунта: {e}")
 
-            self.page.get_by_role("button", name="Войти с паролем").click()
-            self.page.get_by_role("textbox").fill(self.password)
-            self.page.get_by_role("button", name="Войти", exact=True).click()
+            # Click initial 'Войти' button on landing card if present
+            try:
+                login_start = self.page.get_by_role("button", name=re.compile(r"^Войти$", re.I)).first
+                if login_start.is_visible(timeout=2000):
+                    login_start.click(force=True)
+                    logger.info("Нажата стартовая кнопка 'Войти'.")
+            except Exception as e:
+                logger.warning(f"Стартовая кнопка 'Войти': {e}")
 
-            logger.info("Ждем появления вкладки 'Резюме и профиль'...")
-            self.page.get_by_text(re.compile(r"Резюме\s+и\s+профиль")).wait_for(state="visible", timeout=15000)
+            self.page.wait_for_timeout(2000)
 
+            # Click 'Почта' tab if present
+            try:
+                mail_tab = self.page.get_by_text(re.compile(r"^Почта$", re.I)).first
+                if mail_tab.is_visible(timeout=2000):
+                    mail_tab.click(force=True)
+                    logger.info("Вкладка 'Почта' нажата (force=True).")
+            except Exception as e:
+                logger.warning(f"Клик по вкладке 'Почта': {e}")
+
+            # Fill email
+            email_input = self.page.get_by_placeholder(re.compile(r"Электронная почта|Email|почта", re.I)).first
+            if not email_input.is_visible(timeout=2000):
+                email_input = self.page.locator("input[name='login'], input[type='text']").first
+            email_input.fill(self.email)
+            logger.info("Email успешно введен.")
+
+            # Click 'Войти с паролем'
+            try:
+                pass_btn = self.page.get_by_role("button", name=re.compile(r"Войти с паролем", re.I)).first
+                if pass_btn.is_visible(timeout=2000):
+                    pass_btn.click(force=True)
+                    logger.info("Кнопка 'Войти с паролем' нажата.")
+            except Exception as e:
+                logger.warning(f"Переход к вводу пароля: {e}")
+
+            # Fill password
+            pass_input = self.page.get_by_placeholder(re.compile(r"Пароль", re.I)).first
+            if not pass_input.is_visible(timeout=2000):
+                pass_input = self.page.locator("input[type='password']").first
+            pass_input.fill(self.password)
+            logger.info("Пароль успешно введен.")
+
+            # Click final 'Войти' button
+            login_submit = self.page.get_by_role("button", name=re.compile(r"^Войти$", re.I)).first
+            login_submit.click(force=True)
+            logger.info("Нажата финишная кнопка 'Войти'.")
+
+            self.page.wait_for_timeout(4000)
             self.context.storage_state(path=AUTH_FILE)
             logger.info("Авторизация прошла успешно. Сессия обновлена и сохранена.")
 
@@ -144,6 +206,64 @@ class HHAutomation:
         
         if not resume_url or "hh.ru/resume/" not in resume_url:
             logger.error(f"Некорректный или отсутствующий URL для {resume_name}: '{resume_url}'")
+            return False
+
+        logger.info(f"Переход на страницу {resume_name}: {resume_url}")
+        self.page.goto(resume_url, wait_until="domcontentloaded")
+        self.page.wait_for_timeout(3000)
+        
+        # Закрываем баннеры кук если есть
+        for cookie_text in ["Понятно", "Принять", "Закрыть"]:
+            try:
+                cookie_close = self.page.get_by_role("button", name=cookie_text).first
+                if cookie_close.is_visible(timeout=1500):
+                    cookie_close.click(force=True)
+                    logger.info(f"Баннер '{cookie_text}' закрыт.")
+            except Exception:
+                pass
+
+        # Ищем кнопку поднятия резюме по мульти-селекторам
+        button_selectors = [
+            "[data-qa*='resume-update']",
+            "button:has-text('Поднять в поиске')",
+            "a:has-text('Поднять в поиске')",
+            "[data-qa='resume-update-button']"
+        ]
+        
+        button = None
+        for sel in button_selectors:
+            try:
+                el = self.page.locator(sel).first
+                if el.is_visible(timeout=2000):
+                    button = el
+                    logger.info(f"Кнопка 'Поднять в поиске' найдена по селектору: {sel}")
+                    break
+            except Exception:
+                pass
+
+        if not button:
+            try:
+                el = self.page.get_by_text(re.compile(r"Поднять\s+в\s+поиске", re.I)).first
+                if el.is_visible(timeout=2000):
+                    button = el
+                    logger.info("Кнопка 'Поднять в поиске' найдена по регулярному выражению.")
+            except Exception:
+                pass
+
+        if button:
+            try:
+                logger.info(f"Кнопка 'Поднять в поиске' доступна для {resume_name}. Нажимаю (force=True)...")
+                button.click(force=True)
+                self.page.wait_for_timeout(2000)
+                logger.info(f"РЕЗЮМЕ УСПЕШНО ПОДНЯТО: {resume_name}!")
+                return True
+            except Exception as e:
+                logger.error(f"Ошибка при клике на кнопку подъема: {e}")
+                self._save_screenshot("button_click_failed")
+                return False
+        else:
+            logger.warning(f"Кнопка 'Поднять в поиске' не найдена для {resume_name}. Возможно, время еще не пришло.")
+            self._save_screenshot("button_not_available")
             return False
 
         logger.info(f"Переход на страницу {resume_name}: {resume_url}")
@@ -176,6 +296,11 @@ class HHAutomation:
 
 
 def run_update_for_resume(target_id=None):
+    if target_id:
+        log_file = os.path.join(BASE_DIR, f"{target_id}.log")
+        fh = logging.FileHandler(log_file, encoding='utf-8')
+        fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+        logger.addHandler(fh)
     cfg_data = load_resumes_config()
     auth_info = cfg_data.get("auth", {})
     email = auth_info.get("email") or os.environ.get("HH_EMAIL", "")

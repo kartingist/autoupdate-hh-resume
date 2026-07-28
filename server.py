@@ -97,7 +97,8 @@ def run_hh_update_thread(resume_id):
     global running_jobs
     running_jobs[resume_id] = "Поднятие резюме..."
     try:
-        cmd = f"cd {BASE_DIR} && sudo -u heatcliff {VENV_PYTHON} main.py --resume-id {resume_id}"
+        log_file = os.path.join(BASE_DIR, f"{resume_id}.log")
+        cmd = f"cd {BASE_DIR} && sudo -u heatcliff {VENV_PYTHON} main.py --resume-id {resume_id} >> {log_file} 2>&1"
         subprocess.run(cmd, shell=True, check=True)
     except Exception as e:
         print(f"Error running update for {resume_id}:", e)
@@ -656,6 +657,45 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 res = json.dumps({"success": True}).encode("utf-8")
             else:
                 res = json.dumps({"success": False, "message": "Invalid format"}).encode("utf-8")
+
+            self.send_response(200)
+            self.send_cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(res)))
+            self.end_headers()
+            self.wfile.write(res)
+            return
+
+        if self.path == "/api/session":
+            session_data = body.get("session")
+            if session_data:
+                try:
+                    session_file = os.path.join(BASE_DIR, "hh_session.json")
+                    if isinstance(session_data, str):
+                        try:
+                            parsed = json.loads(session_data)
+                            session_data = parsed
+                        except Exception:
+                            session_data = {
+                                "cookies": [
+                                    {
+                                        "name": "hhtoken",
+                                        "value": session_data.strip(),
+                                        "domain": ".hh.ru",
+                                        "path": "/"
+                                    }
+                                ],
+                                "origins": []
+                            }
+
+                    with open(session_file, "w", encoding="utf-8") as f:
+                        json.dump(session_data, f, ensure_ascii=False, indent=2)
+                    os.system(f"chown heatcliff:heatcliff {session_file}")
+                    res = json.dumps({"success": True, "message": "Сессия HH.ru успешно сохранена!"}).encode("utf-8")
+                except Exception as e:
+                    res = json.dumps({"success": False, "message": f"Ошибка сохранения: {e}"}).encode("utf-8")
+            else:
+                res = json.dumps({"success": False, "message": "Данные сессии пусты"}).encode("utf-8")
 
             self.send_response(200)
             self.send_cors_headers()
