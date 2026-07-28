@@ -6,9 +6,9 @@ resumes_config.json
 hh_session.json
 
 # Logs & Screenshots
+logs/
 *.log
 *.png
-cron_log.log
 
 # Virtual Environment & Python Caches
 venv/

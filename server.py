@@ -19,6 +19,10 @@ def load_env_file():
         except Exception as e:
             print('Error loading .env file:', e)
 BASE_DIR = os.environ.get("HH_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+SCREENSHOTS_DIR = os.path.join(LOGS_DIR, "screenshots")
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+
 CONFIG_FILE = os.path.join(BASE_DIR, "resumes_config.json")
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 VENV_PYTHON = os.environ.get("HH_VENV_PYTHON") or os.path.join(BASE_DIR, "venv/bin/python")
@@ -70,7 +74,7 @@ def sync_crontab_with_config(cfg_data):
             continue
         resume_id = item.get("id")
         schedule = item.get("schedule", [])
-        log_file = item.get("log_file") or os.path.join(BASE_DIR, f"{resume_id}.log")
+        log_file = item.get("log_file") or os.path.join(LOGS_DIR, f"{resume_id}.log")
         
         for t_str in schedule:
             t_str = t_str.strip()
@@ -106,7 +110,7 @@ def run_hh_update_thread(resume_id):
     global running_jobs
     running_jobs[resume_id] = "Поднятие резюме..."
     try:
-        log_file = os.path.join(BASE_DIR, f"{resume_id}.log")
+        log_file = os.path.join(LOGS_DIR, f"{resume_id}.log")
         cron_user = os.environ.get("HH_CRON_USER") or os.environ.get("SUDO_USER")
         sudo_prefix = f"sudo -u {cron_user} " if (cron_user and os.geteuid() == 0) else ""
         cmd = f"cd {BASE_DIR} && {sudo_prefix}{VENV_PYTHON} main.py --resume-id {resume_id}"
@@ -553,7 +557,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 schedule: ['07:00', '11:01', '15:02', '19:03', '23:04'],
                 last_time: '-',
                 last_result: 'Новое резюме',
-                log_file: '/home/[user]/autoupdate-hh-resume/' + newId + '.log'
+                log_file: 'logs/' + newId + '.log'
             };
             currentFullConfig.resumes.push(newResume);
             await saveConfigToServer();
@@ -750,12 +754,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/api/config":
             cfg_data = load_resumes_config()
-            cron_log_path = os.path.join(BASE_DIR, "cron_log.log")
+            cron_log_path = os.path.join(LOGS_DIR, "cron_log.log")
             resumes = cfg_data.get("resumes", [])
             
             for item in resumes:
                 resume_id = item.get("id")
-                log_file = item.get("log_file") or os.path.join(BASE_DIR, f"{resume_id}.log")
+                log_file = item.get("log_file") or os.path.join(LOGS_DIR, f"{resume_id}.log")
                 log_content = ""
                 
                 if os.path.exists(log_file):

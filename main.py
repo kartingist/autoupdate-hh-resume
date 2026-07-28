@@ -19,7 +19,7 @@ def setup_logger(target_id=None):
     logger.addHandler(sh)
 
     if target_id:
-        log_file = os.path.join(BASE_DIR, f"{target_id}.log")
+        log_file = os.path.join(LOGS_DIR, f"{target_id}.log")
         fh = logging.FileHandler(log_file, encoding='utf-8')
         fh.setFormatter(formatter)
         logger.addHandler(fh)
@@ -41,6 +41,10 @@ def load_env_file():
         except Exception as e:
             print('Error loading .env file:', e)
 BASE_DIR = os.environ.get("HH_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+SCREENSHOTS_DIR = os.path.join(LOGS_DIR, "screenshots")
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+
 AUTH_FILE = os.path.join(BASE_DIR, "hh_session.json")
 CONFIG_FILE = os.path.join(BASE_DIR, "resumes_config.json")
 ENV_FILE = os.path.join(BASE_DIR, ".env")
@@ -116,7 +120,7 @@ class HHAutomation:
 
     def _save_screenshot(self, name: str):
         if self.page:
-            filename = os.path.join(BASE_DIR, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+            filename = os.path.join(SCREENSHOTS_DIR, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
             self.page.screenshot(path=filename, full_page=True)
             logger.info(f"Скриншот ошибки сохранен: {filename}")
 
