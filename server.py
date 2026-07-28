@@ -5,24 +5,24 @@ import os
 import threading
 import subprocess
 
-BASE_DIR = "/home/heatcliff/autoupdate-hh-resume"
-CONFIG_FILE = os.path.join(BASE_DIR, "resumes_config.json")
-ENV_FILE = os.path.join(BASE_DIR, ".env")
-VENV_PYTHON = os.path.join(BASE_DIR, "venv/bin/python")
-
 def load_env_file():
-    if os.path.exists(ENV_FILE):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.environ.get('HH_ENV_FILE') or os.path.join(script_dir, '.env')
+    if os.path.exists(env_path):
         try:
-            with open(ENV_FILE, "r", encoding="utf-8") as f:
+            with open(env_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        os.environ[k.strip()] = v.strip().strip("'\"")
+                    if line and not line.startswith('#') and '=' in line:
+                        k, v = line.split('=', 1)
+                        os.environ[k.strip()] = v.strip().strip('\"\'')
         except Exception as e:
-            print("Error loading .env file:", e)
+            print('Error loading .env file:', e)
+BASE_DIR = os.environ.get("HH_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "resumes_config.json")
+ENV_FILE = os.path.join(BASE_DIR, ".env")
+VENV_PYTHON = os.environ.get("HH_VENV_PYTHON") or os.path.join(BASE_DIR, "venv/bin/python")
 
-load_env_file()
 PORT = int(os.environ.get("HH_DASHBOARD_PORT", 8883))
 
 running_jobs = {} # {resume_id: status_msg}
