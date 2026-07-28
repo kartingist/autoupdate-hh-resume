@@ -61,9 +61,12 @@ def save_resumes_config(cfg_data):
 
 def sync_crontab_with_config(cfg_data):
     resumes = cfg_data.get("resumes", [])
+    if not resumes:
+        print("No resumes in config, skipping crontab sync.")
+        return
     cron_lines = []
     for item in resumes:
-        if not item.get("enabled", False):
+        if not item.get("enabled", True):
             continue
         resume_id = item.get("id")
         schedule = item.get("schedule", [])
@@ -80,6 +83,10 @@ def sync_crontab_with_config(cfg_data):
                     cron_lines.append(cron_line)
                 except ValueError:
                     pass
+
+    if not cron_lines:
+        print("No valid cron entries generated, skipping crontab overwrite.")
+        return
 
     new_crontab = "\n".join(cron_lines) + "\n"
     tmp_cron = "/tmp/new_crontab.txt"
