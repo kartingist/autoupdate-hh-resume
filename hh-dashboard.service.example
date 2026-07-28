@@ -1,0 +1,14 @@
+[Unit]
+Description=HH Resume Dashboard Service
+After=network.target
+
+[Service]
+Type=simple
+User=heatcliff
+WorkingDirectory=/home/heatcliff/autoupdate-hh-resume
+Environment=HH_BASE_DIR=/home/heatcliff/autoupdate-hh-resume
+ExecStart=/home/heatcliff/autoupdate-hh-resume/venv/bin/python /home/heatcliff/autoupdate-hh-resume/server.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
