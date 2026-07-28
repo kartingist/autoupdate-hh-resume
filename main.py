@@ -62,7 +62,7 @@ def update_resume_status(resume_id: str, last_time: str, last_result: str):
             cfg_data["resumes"] = resumes
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(cfg_data, f, ensure_ascii=False, indent=2)
-            os.system(f"chown heatcliff:heatcliff {CONFIG_FILE}")
+            pass
             logger.info(f"Статус {resume_id} успешно сохранен: {last_result}")
         except Exception as e:
             logger.error(f"Ошибка сохранения статуса {resume_id}: {e}")

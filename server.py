@@ -54,7 +54,7 @@ def save_resumes_config(cfg_data):
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg_data, f, ensure_ascii=False, indent=2)
-        os.system(f"chown heatcliff:heatcliff {CONFIG_FILE}")
+        pass
         sync_crontab_with_config(cfg_data)
     except Exception as e:
         print("Error saving config:", e)
@@ -93,7 +93,9 @@ def sync_crontab_with_config(cfg_data):
     try:
         with open(tmp_cron, "w", encoding="utf-8") as f:
             f.write(new_crontab)
-        subprocess.run(["crontab", "-u", "heatcliff", tmp_cron], check=True)
+        cron_user = os.environ.get("HH_CRON_USER") or os.environ.get("SUDO_USER")
+        cmd_args = ["crontab", "-u", cron_user, tmp_cron] if cron_user else ["crontab", tmp_cron]
+        subprocess.run(cmd_args, check=True)
         if os.path.exists(tmp_cron):
             os.remove(tmp_cron)
         print("Crontab updated successfully!")
@@ -105,7 +107,9 @@ def run_hh_update_thread(resume_id):
     running_jobs[resume_id] = "Поднятие резюме..."
     try:
         log_file = os.path.join(BASE_DIR, f"{resume_id}.log")
-        cmd = f"cd {BASE_DIR} && sudo -u heatcliff {VENV_PYTHON} main.py --resume-id {resume_id} >> {log_file} 2>&1"
+        cron_user = os.environ.get("HH_CRON_USER") or os.environ.get("SUDO_USER")
+        sudo_prefix = f"sudo -u {cron_user} " if (cron_user and os.geteuid() == 0) else ""
+        cmd = f"cd {BASE_DIR} && {sudo_prefix}{VENV_PYTHON} main.py --resume-id {resume_id} >> {log_file} 2>&1"
         subprocess.run(cmd, shell=True, check=True)
     except Exception as e:
         print(f"Error running update for {resume_id}:", e)
@@ -549,7 +553,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 schedule: ['07:00', '11:01', '15:02', '19:03', '23:04'],
                 last_time: '-',
                 last_result: 'Новое резюме',
-                log_file: '/home/heatcliff/autoupdate-hh-resume/' + newId + '.log'
+                log_file: '/home/[user]/autoupdate-hh-resume/' + newId + '.log'
             };
             currentFullConfig.resumes.push(newResume);
             await saveConfigToServer();
@@ -697,7 +701,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
                     with open(session_file, "w", encoding="utf-8") as f:
                         json.dump(session_data, f, ensure_ascii=False, indent=2)
-                    os.system(f"chown heatcliff:heatcliff {session_file}")
+                    pass
                     res = json.dumps({"success": True, "message": "Сессия HH.ru успешно сохранена!"}).encode("utf-8")
                 except Exception as e:
                     res = json.dumps({"success": False, "message": f"Ошибка сохранения: {e}"}).encode("utf-8")
