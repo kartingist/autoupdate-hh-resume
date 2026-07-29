@@ -221,8 +221,16 @@ class HHAutomation:
             logger.error(f"Некорректный или отсутствующий URL для {resume_name}: '{resume_url}'")
             return False
 
-        logger.info(f"Переход на страницу {resume_name}: {resume_url}")
-        self.page.goto(resume_url, wait_until="domcontentloaded")
+        for attempt in range(1, 3):
+            try:
+                logger.info(f"Переход на страницу {resume_name} (попытка {attempt}): {resume_url}")
+                self.page.goto(resume_url, wait_until="domcontentloaded", timeout=45000)
+                break
+            except Exception as e:
+                logger.warning(f"Ошибка загрузки страницы {resume_name} (попытка {attempt}): {e}")
+                if attempt == 2:
+                    raise
+                self.page.wait_for_timeout(3000)
         self.page.wait_for_timeout(3000)
         
         # Закрываем баннеры кук если есть

@@ -74,7 +74,7 @@ def sync_crontab_with_config(cfg_data):
             continue
         resume_id = item.get("id")
         schedule = item.get("schedule", [])
-        log_file = item.get("log_file") or os.path.join(LOGS_DIR, f"{resume_id}.log")
+        log_file = os.path.join(LOGS_DIR, f"{resume_id}.log")
         
         for t_str in schedule:
             t_str = t_str.strip()
@@ -759,7 +759,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             
             for item in resumes:
                 resume_id = item.get("id")
-                log_file = item.get("log_file") or os.path.join(LOGS_DIR, f"{resume_id}.log")
+                log_file = os.path.join(LOGS_DIR, f"{resume_id}.log")
                 log_content = ""
                 
                 if os.path.exists(log_file):
