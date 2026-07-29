@@ -1,3 +1,4 @@
+import fcntl
 import os
 import sys
 import re
@@ -318,6 +319,15 @@ class HHAutomation:
 
 def run_update_for_resume(target_id=None):
     setup_logger(target_id)
+
+    # Prevent concurrent execution of the same target_id
+    lock_filename = f"/tmp/hh_autoupdate_{target_id or 'all'}.lock"
+    lock_file = open(lock_filename, "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        logger.warning(f"Скрипт для target_id='{target_id}' уже выполняется в другом процессе. Выход.")
+        sys.exit(0)
     cfg_data = load_resumes_config()
     auth_info = cfg_data.get("auth", {})
     email = auth_info.get("email") or os.environ.get("HH_EMAIL", "")
