@@ -92,7 +92,15 @@ def sync_crontab_with_config(cfg_data):
         print("No valid cron entries generated, skipping crontab overwrite.")
         return
 
-    new_crontab = "\n".join(cron_lines) + "\n"
+    # Preserve non-HH lines (e.g. tunnel_watchdog.sh) from current crontab
+    try:
+        existing = subprocess.check_output(["crontab", "-l"], stderr=subprocess.DEVNULL).decode()
+    except subprocess.CalledProcessError:
+        existing = ""
+    preserved = [l for l in existing.splitlines() if l.strip() and "main.py" not in l]
+    all_lines = preserved + cron_lines
+    new_crontab = "\n".join(all_lines) + "\n"
+
     tmp_cron = "/tmp/new_crontab.txt"
     try:
         with open(tmp_cron, "w", encoding="utf-8") as f:
@@ -108,9 +116,28 @@ def sync_crontab_with_config(cfg_data):
 
 def run_hh_update_thread(resume_id):
     global running_jobs
+    # Check lock before starting — prevents double-run when cron fires at the same moment
+    import fcntl
+    lock_filename = f"/tmp/hh_autoupdate_{resume_id}.lock"
+    lock_file = None
+    try:
+        fd = os.open(lock_filename, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o666)
+        lock_file = os.fdopen(fd, "a+")
+        try:
+            os.chmod(lock_filename, 0o666)
+        except Exception:
+            pass
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError, BlockingIOError):
+        print(f"[server] resume_id={resume_id} already running (lock busy), skipping.")
+        if lock_file:
+            lock_file.close()
+        if resume_id in running_jobs:
+            del running_jobs[resume_id]
+        return
+
     running_jobs[resume_id] = "Поднятие резюме..."
     try:
-        log_file = os.path.join(LOGS_DIR, f"{resume_id}.log")
         cron_user = os.environ.get("HH_CRON_USER") or os.environ.get("SUDO_USER")
         sudo_prefix = f"sudo -u {cron_user} " if (cron_user and os.geteuid() == 0) else ""
         cmd = f"cd {BASE_DIR} && {sudo_prefix}{VENV_PYTHON} main.py --resume-id {resume_id}"
@@ -118,6 +145,12 @@ def run_hh_update_thread(resume_id):
     except Exception as e:
         print(f"Error running update for {resume_id}:", e)
     finally:
+        if lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+            except Exception:
+                pass
         if resume_id in running_jobs:
             del running_jobs[resume_id]
 

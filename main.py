@@ -63,33 +63,53 @@ def load_resumes_config():
     return {"auth": {"email": "", "password": ""}, "resumes": []}
 
 def update_resume_status(resume_id: str, last_time: str, last_result: str):
-    cfg_data = load_resumes_config()
-    resumes = cfg_data.get("resumes", [])
-    updated = False
-    for c in resumes:
-        if c.get("id") == resume_id:
-            c["last_time"] = last_time
-            c["last_result"] = last_result
-            updated = True
-            break
-    if updated:
+    lock_cfg_path = os.path.join(BASE_DIR, "resumes_config.lock")
+    try:
+        lock_fd = open(lock_cfg_path, "a+")
         try:
+            os.chmod(lock_cfg_path, 0o666)
+        except Exception:
+            pass
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        
+        cfg_data = load_resumes_config()
+        resumes = cfg_data.get("resumes", [])
+        updated = False
+        for c in resumes:
+            if c.get("id") == resume_id:
+                c["last_time"] = last_time
+                c["last_result"] = last_result
+                updated = True
+                break
+        if updated:
             cfg_data["resumes"] = resumes
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(cfg_data, f, ensure_ascii=False, indent=2)
-            pass
             logger.info(f"Статус {resume_id} успешно сохранен: {last_result}")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения статуса {resume_id}: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения статуса {resume_id}: {e}")
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+        except Exception:
+            pass
 
 class HHAutomation:
-    def __init__(self, playwright: Playwright, email: str, password: str):
+    def __init__(self, playwright: Playwright, email: str, password: str, target_id: str = None):
         self.playwright = playwright
         self.email = email
         self.password = password
+        self.target_id = target_id
         self.browser: Browser = None
         self.context: BrowserContext = None
         self.page: Page = None
+        
+        # Isolated session file for this target_id
+        if target_id:
+            self.auth_file = os.path.join(BASE_DIR, f"hh_session_{target_id}.json")
+        else:
+            self.auth_file = AUTH_FILE
 
     def launch_browser(self, headless: bool = True):
         logger.info("Запуск браузера Chromium с режимом Stealth...")
@@ -100,10 +120,13 @@ class HHAutomation:
 
         user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
-        if os.path.exists(AUTH_FILE):
-            logger.info(f"Загрузка сохраненной сессии из {AUTH_FILE}...")
+        # Check target_id specific session file first, fallback to general AUTH_FILE
+        target_auth = self.auth_file if os.path.exists(self.auth_file) else (AUTH_FILE if os.path.exists(AUTH_FILE) else None)
+
+        if target_auth:
+            logger.info(f"Загрузка сохраненной сессии из {target_auth}...")
             self.context = self.browser.new_context(
-                storage_state=AUTH_FILE,
+                storage_state=target_auth,
                 user_agent=user_agent,
                 viewport={"width": 1280, "height": 800},
                 locale="ru-RU"
@@ -206,7 +229,11 @@ class HHAutomation:
             logger.info("Нажата финишная кнопка 'Войти'.")
 
             self.page.wait_for_timeout(4000)
-            self.context.storage_state(path=AUTH_FILE)
+            self.context.storage_state(path=self.auth_file)
+            try:
+                self.context.storage_state(path=AUTH_FILE)
+            except Exception:
+                pass
             logger.info("Авторизация прошла успешно. Сессия обновлена и сохранена.")
 
         except Exception as e:
@@ -321,18 +348,26 @@ def run_update_for_resume(target_id=None):
     setup_logger(target_id)
 
     # Prevent concurrent execution of the same target_id
+    # Lock file always uses fixed path /tmp/hh_autoupdate_<id>.lock with 0o666 perms
+    # so both cron (root) and server.py (any user) share the same lock correctly.
     lock_filename = f"/tmp/hh_autoupdate_{target_id or 'all'}.lock"
+    lock_file = None
     try:
-        lock_file = open(lock_filename, "a+")
+        # Open in write mode so we can always create/truncate regardless of owner
+        # Use O_CREAT|O_WRONLY|O_APPEND so we can open even if file belongs to another user
+        fd = os.open(lock_filename, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o666)
+        lock_file = os.fdopen(fd, 'a+')
         try:
             os.chmod(lock_filename, 0o666)
         except Exception:
             pass
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except PermissionError:
-        logger.warning(f"Предупреждение: Файл блокировки '{lock_filename}' недоступен для записи, пропуск замка.")
-    except (IOError, OSError):
-        logger.warning(f"Скрипт для target_id='{target_id}' уже выполняется в другом процессе. Выход.")
+        logger.info(f"Блокировка получена: {lock_filename}")
+    except (IOError, OSError) as e:
+        # LOCK_NB raises BlockingIOError (subclass of OSError) if already locked
+        logger.warning(f"Скрипт для target_id='{target_id}' уже выполняется. Выход. ({e})")
+        if lock_file:
+            lock_file.close()
         sys.exit(0)
     cfg_data = load_resumes_config()
     auth_info = cfg_data.get("auth", {})
@@ -362,7 +397,7 @@ def run_update_for_resume(target_id=None):
         return
 
     with sync_playwright() as playwright:
-        hh = HHAutomation(playwright, email=email, password=password)
+        hh = HHAutomation(playwright, email=email, password=password, target_id=target_id)
         try:
             hh.launch_browser(headless=True)
 
