@@ -105,7 +105,7 @@ def sync_crontab_with_config(cfg_data):
     try:
         with open(tmp_cron, "w", encoding="utf-8") as f:
             f.write(new_crontab)
-        cron_user = os.environ.get("HH_CRON_USER") or os.environ.get("SUDO_USER")
+        cron_user = os.environ.get("HH_CRON_USER") or "root"
         cmd_args = ["crontab", "-u", cron_user, tmp_cron] if cron_user else ["crontab", tmp_cron]
         subprocess.run(cmd_args, check=True)
         if os.path.exists(tmp_cron):
@@ -138,7 +138,7 @@ def run_hh_update_thread(resume_id):
 
     running_jobs[resume_id] = "Поднятие резюме..."
     try:
-        cron_user = os.environ.get("HH_CRON_USER") or os.environ.get("SUDO_USER")
+        cron_user = os.environ.get("HH_CRON_USER") or "root"
         sudo_prefix = f"sudo -u {cron_user} " if (cron_user and os.geteuid() == 0) else ""
         cmd = f"cd {BASE_DIR} && {sudo_prefix}{VENV_PYTHON} main.py --resume-id {resume_id}"
         subprocess.run(cmd, shell=True, check=True)
