@@ -150,19 +150,23 @@ class HHAutomation:
 
     def is_logged_in(self, target_url: str) -> bool:
         logger.info("Проверка статуса авторизации...")
-        try:
-            self.page.goto(target_url, wait_until="domcontentloaded")
-            login_button = self.page.get_by_role("button", name="Войти").first
+        for attempt in range(1, 4):
+            try:
+                self.page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+                login_button = self.page.get_by_role("button", name="Войти").first
 
-            if login_button.is_visible(timeout=5000):
-                logger.info("Кнопка 'Войти' обнаружена. Нужно авторизоваться.")
-                return False
+                if login_button.is_visible(timeout=5000):
+                    logger.info("Кнопка 'Войти' обнаружена. Нужно авторизоваться.")
+                    return False
 
-            logger.info("Сессия валидна, мы внутри.")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка при проверке авторизации: {e}")
-            return False
+                logger.info("Сессия валидна, мы внутри.")
+                return True
+            except Exception as e:
+                logger.warning(f"Ошибка проверки авторизации (попытка {attempt}/3): {e}")
+                if attempt < 3:
+                    logger.info("Ожидание 15 секунд перед повторной попыткой сетевого подключения...")
+                    self.page.wait_for_timeout(15000)
+        return False
 
     def perform_login(self):
         logger.info(f"Начало процесса входа для {self.email}...")
