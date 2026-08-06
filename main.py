@@ -120,8 +120,8 @@ class HHAutomation:
 
         user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
-        # Check target_id specific session file first, fallback to general AUTH_FILE
-        target_auth = self.auth_file if os.path.exists(self.auth_file) else (AUTH_FILE if os.path.exists(AUTH_FILE) else None)
+        # Isolated session file for target_id
+        target_auth = self.auth_file if os.path.exists(self.auth_file) else None
 
         if target_auth:
             logger.info(f"Загрузка сохраненной сессии из {target_auth}...")
@@ -150,6 +150,7 @@ class HHAutomation:
 
     def is_logged_in(self, target_url: str) -> bool:
         logger.info("Проверка статуса авторизации...")
+        last_exception = None
         for attempt in range(1, 4):
             try:
                 self.page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
@@ -162,10 +163,22 @@ class HHAutomation:
                 logger.info("Сессия валидна, мы внутри.")
                 return True
             except Exception as e:
-                logger.warning(f"Ошибка проверки авторизации (попытка {attempt}/3): {e}")
+                err_str = str(e)
+                last_exception = e
+                # Check for explicit network / DNS resolution errors
+                if any(net_err in err_str for net_err in ["ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED", "ERR_CONNECTION_REFUSED", "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE"]):
+                    logger.warning(f"Сетевая ошибка при проверке (попытка {attempt}/3): {err_str}")
+                else:
+                    logger.warning(f"Ошибка проверки авторизации (попытка {attempt}/3): {err_str}")
+                
                 if attempt < 3:
                     logger.info("Ожидание 15 секунд перед повторной попыткой сетевого подключения...")
                     self.page.wait_for_timeout(15000)
+        
+        # If all 3 attempts failed due to network / DNS resolution, raise RuntimeError rather than assuming unauthenticated
+        if last_exception and any(net_err in str(last_exception) for net_err in ["ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED", "ERR_CONNECTION_REFUSED", "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE"]):
+            raise RuntimeError(f"Отсутствует интернет-соединение или недоступен DNS (ERR_NAME_NOT_RESOLVED). Процесс отменен.")
+            
         return False
 
     def perform_login(self):
