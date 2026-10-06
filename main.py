@@ -357,22 +357,24 @@ class HHAutomation:
 def run_update_for_resume(target_id=None):
     setup_logger(target_id)
 
-    lock_filename = f"/tmp/hh_autoupdate_{target_id or 'all'}.lock"
+    lock_filename = os.path.join(LOGS_DIR, f"{target_id or 'all'}.lock")
     lock_file = None
     try:
-        fd = os.open(lock_filename, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o666)
-        lock_file = os.fdopen(fd, 'a+')
+        lock_file = open(lock_filename, "a+")
         try:
             os.chmod(lock_filename, 0o666)
         except Exception:
             pass
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         logger.info(f"Блокировка получена: {lock_filename}")
-    except (IOError, OSError) as e:
-        logger.warning(f"Скрипт для target_id='{target_id}' уже выполняется. Выход. ({e})")
-        if lock_file:
-            lock_file.close()
-        sys.exit(0)
+    except (BlockingIOError, IOError, OSError) as e:
+        if isinstance(e, BlockingIOError) or (hasattr(e, 'errno') and e.errno in (11, 35)):
+            logger.warning(f"Скрипт для target_id='{target_id}' уже выполняется. Выход.")
+            if lock_file:
+                lock_file.close()
+            sys.exit(0)
+        else:
+            logger.warning(f"Не удалось получить файл блокировки {lock_filename} ({e}), продолжаю без блокировки.")
 
     cfg_data = load_resumes_config()
     auth_info = cfg_data.get("auth", {})
