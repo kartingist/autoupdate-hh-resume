@@ -17,3 +17,6 @@ __pycache__/
 SERVICE
 new_crontab.txt
 *.lock
+hh_session*.json
+.idea/
+.python-version

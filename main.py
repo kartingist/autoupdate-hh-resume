@@ -10,6 +10,16 @@ from playwright.sync_api import Playwright, sync_playwright, Page, BrowserContex
 
 # --- Настройка логирования ---
 logger = logging.getLogger(__name__)
+
+BASE_DIR = os.environ.get("HH_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+SCREENSHOTS_DIR = os.path.join(LOGS_DIR, "screenshots")
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+
+AUTH_FILE = os.path.join(BASE_DIR, "hh_session.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "resumes_config.json")
+ENV_FILE = os.path.join(BASE_DIR, ".env")
+
 def setup_logger(target_id=None):
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
@@ -38,17 +48,11 @@ def load_env_file():
                     line = line.strip()
                     if line and not line.startswith('#') and '=' in line:
                         k, v = line.split('=', 1)
-                        os.environ[k.strip()] = v.strip().strip('\"\'')
+                        os.environ[k.strip()] = v.strip().strip('"\'')
         except Exception as e:
             print('Error loading .env file:', e)
-BASE_DIR = os.environ.get("HH_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
-SCREENSHOTS_DIR = os.path.join(LOGS_DIR, "screenshots")
-os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
-AUTH_FILE = os.path.join(BASE_DIR, "hh_session.json")
-CONFIG_FILE = os.path.join(BASE_DIR, "resumes_config.json")
-ENV_FILE = os.path.join(BASE_DIR, ".env")
+load_env_file()
 
 def load_resumes_config():
     if os.path.exists(CONFIG_FILE):
@@ -105,7 +109,7 @@ class HHAutomation:
         self.context: BrowserContext = None
         self.page: Page = None
         
-        # Isolated session file for this target_id
+        # Isolated session file for target_id
         if target_id:
             self.auth_file = os.path.join(BASE_DIR, f"hh_session_{target_id}.json")
         else:
@@ -115,12 +119,15 @@ class HHAutomation:
         logger.info("Запуск браузера Chromium с режимом Stealth...")
         self.browser = self.playwright.chromium.launch(
             headless=headless,
-            args=["--disable-blink-features=AutomationControlled"]
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled"
+            ]
         )
 
-        user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-        # Isolated session file for target_id
         target_auth = self.auth_file if os.path.exists(self.auth_file) else None
 
         if target_auth:
@@ -140,112 +147,98 @@ class HHAutomation:
             )
 
         self.page = self.context.new_page()
+        self.page.set_default_timeout(60000)
         self.page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     def _save_screenshot(self, name: str):
         if self.page:
-            filename = os.path.join(SCREENSHOTS_DIR, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-            self.page.screenshot(path=filename, full_page=True)
-            logger.info(f"Скриншот ошибки сохранен: {filename}")
+            try:
+                filename = os.path.join(SCREENSHOTS_DIR, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+                self.page.screenshot(path=filename, full_page=False, timeout=15000)
+                logger.info(f"Скриншот сохранен: {filename}")
+            except Exception as e:
+                logger.warning(f"Не удалось сохранить скриншот {name}: {e}")
 
     def is_logged_in(self, target_url: str) -> bool:
-        logger.info("Проверка статуса авторизации...")
-        last_exception = None
+        logger.info(f"Проверка статуса авторизации ({target_url})...")
         for attempt in range(1, 4):
             try:
-                self.page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
-                login_button = self.page.get_by_role("button", name="Войти").first
+                self.page.goto(target_url, wait_until="commit", timeout=45000)
+                self.page.locator("body").wait_for(state="attached", timeout=30000)
+                self.page.wait_for_timeout(2000)
 
-                if login_button.is_visible(timeout=5000):
-                    logger.info("Кнопка 'Войти' обнаружена. Нужно авторизоваться.")
+                login_btn = self.page.locator('button:has-text("Войти"), a:has-text("Войти")').first
+                if login_btn.is_visible(timeout=3000):
+                    logger.info("Кнопка 'Войти' обнаружена. Сессия не активна.")
                     return False
 
-                logger.info("Сессия валидна, мы внутри.")
+                logger.info("Сессия валидна, авторизация подтверждена.")
                 return True
             except Exception as e:
                 err_str = str(e)
-                last_exception = e
-                # Check for explicit network / DNS resolution errors
-                if any(net_err in err_str for net_err in ["ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED", "ERR_CONNECTION_REFUSED", "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE"]):
-                    logger.warning(f"Сетевая ошибка при проверке (попытка {attempt}/3): {err_str}")
-                else:
-                    logger.warning(f"Ошибка проверки авторизации (попытка {attempt}/3): {err_str}")
-                
+                logger.warning(f"Ошибка проверки авторизации (попытка {attempt}/3): {err_str}")
                 if attempt < 3:
-                    logger.info("Ожидание 15 секунд перед повторной попыткой сетевого подключения...")
-                    self.page.wait_for_timeout(15000)
-        
-        # If all 3 attempts failed due to network / DNS resolution, raise RuntimeError rather than assuming unauthenticated
-        if last_exception and any(net_err in str(last_exception) for net_err in ["ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED", "ERR_CONNECTION_REFUSED", "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE"]):
-            raise RuntimeError(f"Отсутствует интернет-соединение или недоступен DNS (ERR_NAME_NOT_RESOLVED). Процесс отменен.")
-            
+                    self.page.wait_for_timeout(5000)
         return False
 
     def perform_login(self):
         logger.info(f"Начало процесса входа для {self.email}...")
         try:
-            if "account/login" not in self.page.url:
-                self.page.goto("https://hh.ru/account/login?role=applicant", wait_until="domcontentloaded")
+            self.page.goto("https://hh.ru/account/login?role=applicant", wait_until="commit", timeout=45000)
+            self.page.locator("body").wait_for(state="attached", timeout=30000)
             self.page.wait_for_timeout(2000)
 
-            # Ensure Applicant role card is selected
+            # Шаг 1: Нажатие стартовой кнопки 'Войти' (если на экране выбора типа аккаунта)
             try:
-                applicant_radio = self.page.locator("[data-qa*='APPLICANT']").first
-                if applicant_radio.is_visible(timeout=2000):
-                    applicant_radio.click(force=True)
-                    logger.info("Выбран тип аккаунта 'Соискатель'.")
-            except Exception as e:
-                logger.warning(f"Выбор типа аккаунта: {e}")
-
-            # Click initial 'Войти' button on landing card if present
-            try:
-                login_start = self.page.get_by_role("button", name=re.compile(r"^Войти$", re.I)).first
-                if login_start.is_visible(timeout=2000):
+                login_start = self.page.locator("button:has-text('Войти')").first
+                if login_start.is_visible(timeout=3000):
                     login_start.click(force=True)
                     logger.info("Нажата стартовая кнопка 'Войти'.")
+                    self.page.wait_for_timeout(2000)
             except Exception as e:
                 logger.warning(f"Стартовая кнопка 'Войти': {e}")
 
-            self.page.wait_for_timeout(2000)
-
-            # Click 'Почта' tab if present
+            # Шаг 2: Выбор радио/вкладки 'Почта' (новый интерфейс Magritte)
             try:
-                mail_tab = self.page.get_by_text(re.compile(r"^Почта$", re.I)).first
-                if mail_tab.is_visible(timeout=2000):
-                    mail_tab.click(force=True)
-                    logger.info("Вкладка 'Почта' нажата (force=True).")
+                email_tab = self.page.locator('[data-qa="credential-type-email"], label:has-text("Почта"), button:has-text("Почта")').first
+                if email_tab.is_visible(timeout=3000):
+                    email_tab.click(force=True)
+                    logger.info("Выбран способ входа через почту.")
+                    self.page.wait_for_timeout(1000)
             except Exception as e:
-                logger.warning(f"Клик по вкладке 'Почта': {e}")
+                logger.warning(f"Выбор типа входа 'Почта': {e}")
 
-            # Fill email
-            email_input = self.page.get_by_placeholder(re.compile(r"Электронная почта|Email|почта", re.I)).first
-            if not email_input.is_visible(timeout=2000):
-                email_input = self.page.locator("input[name='login'], input[type='text']").first
+            # Шаг 3: Ввод Email
+            email_input = self.page.locator('[data-qa="applicant-login-input-email"], input[name="login"], input[type="email"], input[type="text"]').first
+            email_input.wait_for(state="visible", timeout=15000)
             email_input.fill(self.email)
             logger.info("Email успешно введен.")
+            self.page.wait_for_timeout(1000)
 
-            # Click 'Войти с паролем'
+            # Шаг 4: Нажатие 'Войти с паролем'
             try:
-                pass_btn = self.page.get_by_role("button", name=re.compile(r"Войти с паролем", re.I)).first
-                if pass_btn.is_visible(timeout=2000):
+                pass_btn = self.page.locator("button:has-text('парол')").first
+                if pass_btn.is_visible(timeout=3000):
                     pass_btn.click(force=True)
                     logger.info("Кнопка 'Войти с паролем' нажата.")
+                    self.page.wait_for_timeout(2000)
             except Exception as e:
                 logger.warning(f"Переход к вводу пароля: {e}")
 
-            # Fill password
-            pass_input = self.page.get_by_placeholder(re.compile(r"Пароль", re.I)).first
-            if not pass_input.is_visible(timeout=2000):
-                pass_input = self.page.locator("input[type='password']").first
+            # Шаг 5: Ввод пароля
+            pass_input = self.page.locator('[data-qa="applicant-login-input-password"], input[type="password"]').first
+            pass_input.wait_for(state="visible", timeout=15000)
             pass_input.fill(self.password)
             logger.info("Пароль успешно введен.")
+            self.page.wait_for_timeout(1000)
 
-            # Click final 'Войти' button
-            login_submit = self.page.get_by_role("button", name=re.compile(r"^Войти$", re.I)).first
-            login_submit.click(force=True)
-            logger.info("Нажата финишная кнопка 'Войти'.")
+            # Шаг 6: Отправка формы авторизации
+            submit_btn = self.page.locator('button:has-text("Войти")').first
+            submit_btn.click(force=True)
+            logger.info("Нажата финишная кнопка 'Войти'. Ожидание завершения авторизации...")
+            self.page.wait_for_timeout(6000)
 
-            self.page.wait_for_timeout(4000)
+            # Сохранение обновленной сессии
             self.context.storage_state(path=self.auth_file)
             try:
                 self.context.storage_state(path=AUTH_FILE)
@@ -269,7 +262,11 @@ class HHAutomation:
         for attempt in range(1, 3):
             try:
                 logger.info(f"Переход на страницу {resume_name} (попытка {attempt}): {resume_url}")
-                self.page.goto(resume_url, wait_until="domcontentloaded", timeout=45000)
+                if self.page.url.rstrip("/") != resume_url.rstrip("/"):
+                    self.page.goto(resume_url, wait_until="commit", timeout=45000)
+                    self.page.locator("body").wait_for(state="attached", timeout=30000)
+                else:
+                    logger.info(f"Уже на странице {resume_name}, пропускаю повторную загрузку.")
                 break
             except Exception as e:
                 logger.warning(f"Ошибка загрузки страницы {resume_name} (попытка {attempt}): {e}")
@@ -278,21 +275,23 @@ class HHAutomation:
                 self.page.wait_for_timeout(3000)
         self.page.wait_for_timeout(3000)
         
-        # Закрываем баннеры кук если есть
+        # Закрываем баннеры согласия с cookies если есть
         for cookie_text in ["Понятно", "Принять", "Закрыть"]:
             try:
-                cookie_close = self.page.get_by_role("button", name=cookie_text).first
-                if cookie_close.is_visible(timeout=1500):
+                cookie_close = self.page.locator(f"button:has-text('{cookie_text}')").first
+                if cookie_close.is_visible(timeout=1000):
                     cookie_close.click(force=True)
                     logger.info(f"Баннер '{cookie_text}' закрыт.")
             except Exception:
                 pass
 
-        # Ищем кнопку поднятия резюме по мульти-селекторам
+        # Ищем кнопку поднятия резюме
         button_selectors = [
             "[data-qa*='resume-update']",
             "button:has-text('Поднять в поиске')",
+            "button:has-text('Поднять')",
             "a:has-text('Поднять в поиске')",
+            "a:has-text('Поднять')",
             "[data-qa='resume-update-button']"
         ]
         
@@ -318,9 +317,26 @@ class HHAutomation:
 
         if button:
             try:
-                logger.info(f"Кнопка 'Поднять в поиске' доступна для {resume_name}. Нажимаю (force=True)...")
-                button.click(force=True)
-                self.page.wait_for_timeout(2000)
+                logger.info(f"Кнопка 'Поднять в поиске' доступна для {resume_name}. Нажимаю реальным кликом с ожиданием ответа...")
+                button.scroll_into_view_if_needed()
+                self.page.wait_for_timeout(1000)
+                
+                try:
+                    with self.page.expect_response(lambda res: "touch" in res.url or "resume" in res.url, timeout=15000):
+                        button.click()
+                except Exception as net_e:
+                    logger.warning(f"Ожидание сетевого ответа: {net_e}. Повторяю клик с force...")
+                    button.click(force=True)
+
+                self.page.wait_for_timeout(5000)
+                
+                # Проверяем статус блока поднятия
+                try:
+                    time_info = self.page.locator("text=Поднятие резюме").first.locator("..").all_inner_texts()
+                    logger.info(f"Статус блока поднятия после клика: {time_info}")
+                except Exception:
+                    pass
+
                 logger.info(f"РЕЗЮМЕ УСПЕШНО ПОДНЯТО: {resume_name}!")
                 return True
             except Exception as e:
@@ -328,30 +344,7 @@ class HHAutomation:
                 self._save_screenshot("button_click_failed")
                 return False
         else:
-            logger.warning(f"Кнопка 'Поднять в поиске' не найдена для {resume_name}. Возможно, время еще не пришло.")
-            self._save_screenshot("button_not_available")
-            return False
-
-        logger.info(f"Переход на страницу {resume_name}: {resume_url}")
-        self.page.goto(resume_url, wait_until="domcontentloaded")
-        
-        try:
-            cookie_close = self.page.get_by_role("button", name="Понятно")
-            if cookie_close.is_visible(timeout=3000):
-                cookie_close.click()
-                logger.info("Баннер кук закрыт.")
-        except Exception:
-            pass
-
-        button = self.page.get_by_text("Поднять в поиске")
-        try:
-            button.wait_for(state="visible", timeout=7000)
-            logger.info(f"Кнопка 'Поднять в поиске' доступна для {resume_name}. Нажимаю...")
-            button.click()
-            logger.info(f"РЕЗЮМЕ УСПЕШНО ПОДНЯТО: {resume_name}!")
-            return True
-        except Exception:
-            logger.warning(f"Кнопка 'Поднять в поиске' не найдена для {resume_name}. Возможно, время еще не пришло.")
+            logger.warning(f"Кнопка 'Поднять в поиске' не найдена для {resume_name}. Возможно, время еще не пришло или резюме скрыто.")
             self._save_screenshot("button_not_available")
             return False
 
@@ -364,14 +357,9 @@ class HHAutomation:
 def run_update_for_resume(target_id=None):
     setup_logger(target_id)
 
-    # Prevent concurrent execution of the same target_id
-    # Lock file always uses fixed path /tmp/hh_autoupdate_<id>.lock with 0o666 perms
-    # so both cron (root) and server.py (any user) share the same lock correctly.
     lock_filename = f"/tmp/hh_autoupdate_{target_id or 'all'}.lock"
     lock_file = None
     try:
-        # Open in write mode so we can always create/truncate regardless of owner
-        # Use O_CREAT|O_WRONLY|O_APPEND so we can open even if file belongs to another user
         fd = os.open(lock_filename, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o666)
         lock_file = os.fdopen(fd, 'a+')
         try:
@@ -381,11 +369,11 @@ def run_update_for_resume(target_id=None):
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         logger.info(f"Блокировка получена: {lock_filename}")
     except (IOError, OSError) as e:
-        # LOCK_NB raises BlockingIOError (subclass of OSError) if already locked
         logger.warning(f"Скрипт для target_id='{target_id}' уже выполняется. Выход. ({e})")
         if lock_file:
             lock_file.close()
         sys.exit(0)
+
     cfg_data = load_resumes_config()
     auth_info = cfg_data.get("auth", {})
     email = auth_info.get("email") or os.environ.get("HH_EMAIL", "")
