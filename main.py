@@ -68,6 +68,7 @@ def load_resumes_config():
 
 def update_resume_status(resume_id: str, last_time: str, last_result: str):
     lock_cfg_path = os.path.join(BASE_DIR, "resumes_config.lock")
+    lock_fd = None
     try:
         lock_fd = open(lock_cfg_path, "a+")
         try:
@@ -93,11 +94,12 @@ def update_resume_status(resume_id: str, last_time: str, last_result: str):
     except Exception as e:
         logger.error(f"Ошибка сохранения статуса {resume_id}: {e}")
     finally:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
-        except Exception:
-            pass
+        if lock_fd:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+            except Exception:
+                pass
 
 class HHAutomation:
     def __init__(self, playwright: Playwright, email: str, password: str, target_id: str = None):
@@ -151,13 +153,28 @@ class HHAutomation:
         self.page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     def _save_screenshot(self, name: str):
-        if self.page:
+        if self.page and not self.page.is_closed():
             try:
                 filename = os.path.join(SCREENSHOTS_DIR, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 self.page.screenshot(path=filename, full_page=False, timeout=15000)
                 logger.info(f"Скриншот сохранен: {filename}")
             except Exception as e:
                 logger.warning(f"Не удалось сохранить скриншот {name}: {e}")
+
+    def _close_overlays_and_banners(self):
+        """Закрывает куки-баннеры, всплывающие окна и оверлеи."""
+        if not self.page or self.page.is_closed():
+            return
+        banner_texts = ["Понятно", "Принять", "Закрыть", "Хорошо", "Согласен", "Принять все"]
+        for text in banner_texts:
+            try:
+                btn = self.page.locator(f"button:has-text('{text}'), [role='button']:has-text('{text}')").first
+                if btn.is_visible(timeout=1000):
+                    btn.click(force=True, timeout=3000)
+                    logger.info(f"Баннер/оверлей '{text}' закрыт.")
+                    self.page.wait_for_timeout(500)
+            except Exception:
+                pass
 
     def is_logged_in(self, target_url: str) -> bool:
         logger.info(f"Проверка статуса авторизации ({target_url})...")
@@ -166,6 +183,7 @@ class HHAutomation:
                 self.page.goto(target_url, wait_until="commit", timeout=45000)
                 self.page.locator("body").wait_for(state="attached", timeout=30000)
                 self.page.wait_for_timeout(2000)
+                self._close_overlays_and_banners()
 
                 login_btn = self.page.locator('button:has-text("Войти"), a:has-text("Войти")').first
                 if login_btn.is_visible(timeout=3000):
@@ -187,6 +205,7 @@ class HHAutomation:
             self.page.goto("https://hh.ru/account/login?role=applicant", wait_until="commit", timeout=45000)
             self.page.locator("body").wait_for(state="attached", timeout=30000)
             self.page.wait_for_timeout(2000)
+            self._close_overlays_and_banners()
 
             # Шаг 1: Нажатие стартовой кнопки 'Войти' (если на экране выбора типа аккаунта)
             try:
@@ -252,6 +271,12 @@ class HHAutomation:
             raise
 
     def raise_resume(self, resume_item: dict) -> bool:
+        """
+        Возвращает:
+            True  - Резюме успешно поднято
+            False - Кнопка еще не активна по времени (не является ошибкой, ретрай не нужен)
+        Выбрасывает исключение при сбое (для механизма ретраев).
+        """
         resume_url = resume_item.get("url", "").strip()
         resume_name = resume_item.get("name", "Резюме")
         
@@ -266,33 +291,31 @@ class HHAutomation:
                     self.page.goto(resume_url, wait_until="commit", timeout=45000)
                     self.page.locator("body").wait_for(state="attached", timeout=30000)
                 else:
-                    logger.info(f"Уже на странице {resume_name}, пропускаю повторную загрузку.")
+                    logger.info(f"Уже на странице {resume_name}, обновляю страницу...")
+                    self.page.reload(wait_until="commit", timeout=45000)
+                    self.page.locator("body").wait_for(state="attached", timeout=30000)
                 break
             except Exception as e:
                 logger.warning(f"Ошибка загрузки страницы {resume_name} (попытка {attempt}): {e}")
                 if attempt == 2:
                     raise
                 self.page.wait_for_timeout(3000)
-        self.page.wait_for_timeout(3000)
         
-        # Закрываем баннеры согласия с cookies если есть
-        for cookie_text in ["Понятно", "Принять", "Закрыть"]:
-            try:
-                cookie_close = self.page.locator(f"button:has-text('{cookie_text}')").first
-                if cookie_close.is_visible(timeout=1000):
-                    cookie_close.click(force=True)
-                    logger.info(f"Баннер '{cookie_text}' закрыт.")
-            except Exception:
-                pass
+        self.page.wait_for_timeout(3000)
+        self._close_overlays_and_banners()
 
-        # Ищем кнопку поднятия резюме
+        # Приоритетные селекторы конкретных кнопок и ссылок (не обобщенных div'ов)
         button_selectors = [
-            "[data-qa*='resume-update']",
             "button:has-text('Поднять в поиске')",
+            "button[data-qa='resume-update-button']",
+            "button[data-qa*='resume-update']",
             "button:has-text('Поднять')",
             "a:has-text('Поднять в поиске')",
+            "a[data-qa='resume-update-button']",
+            "a[data-qa*='resume-update']",
             "a:has-text('Поднять')",
-            "[data-qa='resume-update-button']"
+            "[data-qa='resume-update-button']",
+            "[data-qa*='resume-update']:not(div):not(section)"
         ]
         
         button = None
@@ -308,25 +331,68 @@ class HHAutomation:
 
         if not button:
             try:
-                el = self.page.get_by_text(re.compile(r"Поднять\s+в\s+поиске", re.I)).first
+                el = self.page.locator("button, a, [role='button']").filter(
+                    has_text=re.compile(r"Поднять\s+в\s+поиске", re.I)
+                ).first
                 if el.is_visible(timeout=2000):
                     button = el
-                    logger.info("Кнопка 'Поднять в поиске' найдена по регулярному выражению.")
+                    logger.info("Кнопка 'Поднять в поиске' найдена по регулярному выражению кнопки.")
             except Exception:
                 pass
+
+        if not button:
+            # Умное ожидание таймера 'Можно сегодня в HH:MM'
+            try:
+                page_text = self.page.locator("body").inner_text()
+                time_match = re.search(r"Можно\s+(?:сегодня\s+)?в\s*(\d{1,2}):(\d{2})", page_text)
+                if time_match:
+                    h, m = int(time_match.group(1)), int(time_match.group(2))
+                    now = datetime.now()
+                    target_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+                    wait_sec = (target_time - now).total_seconds()
+                    if 0 < wait_sec <= 420:  # ждем до 7 минут если время почти наступило
+                        logger.info(f"Таймер HH: кнопка появится в {h:02d}:{m:02d} (через {int(wait_sec)} сек). Ожидаю...")
+                        self.page.wait_for_timeout(int(wait_sec + 8) * 1000)
+                        self.page.reload(wait_until="commit", timeout=45000)
+                        self.page.locator("body").wait_for(state="attached", timeout=30000)
+                        self.page.wait_for_timeout(3000)
+                        self._close_overlays_and_banners()
+                        for sel in button_selectors:
+                            try:
+                                el = self.page.locator(sel).first
+                                if el.is_visible(timeout=3000):
+                                    button = el
+                                    logger.info(f"Кнопка 'Поднять в поиске' успешно найдена после ожидания таймера: {sel}")
+                                    break
+                            except Exception:
+                                pass
+            except Exception as wait_e:
+                logger.warning(f"Ошибка при проверке таймера ожидания: {wait_e}")
 
         if button:
             try:
                 logger.info(f"Кнопка 'Поднять в поиске' доступна для {resume_name}. Нажимаю реальным кликом с ожиданием ответа...")
-                button.scroll_into_view_if_needed()
+                self._close_overlays_and_banners()
+                button.scroll_into_view_if_needed(timeout=5000)
                 self.page.wait_for_timeout(1000)
                 
+                # Клик с защитой от зависания и fallback на JS-клик
+                click_succeeded = False
                 try:
-                    with self.page.expect_response(lambda res: "touch" in res.url or "resume" in res.url, timeout=15000):
-                        button.click()
-                except Exception as net_e:
-                    logger.warning(f"Ожидание сетевого ответа: {net_e}. Повторяю клик с force...")
-                    button.click(force=True)
+                    button.click(timeout=10000)
+                    click_succeeded = True
+                    logger.info("Клик через Playwright API успешно выполнен.")
+                except Exception as click_err:
+                    logger.warning(f"Playwright click вызвал ошибку ({click_err}), применяю JavaScript click...")
+                    try:
+                        button.evaluate("el => el.click()")
+                        click_succeeded = True
+                        logger.info("JavaScript click (element.click()) успешно выполнен.")
+                    except Exception as js_err:
+                        logger.warning(f"JavaScript click не удался ({js_err}), пробую force-клик...")
+                        button.click(force=True, timeout=10000)
+                        click_succeeded = True
+                        logger.info("Force-клик успешно выполнен.")
 
                 self.page.wait_for_timeout(5000)
                 
@@ -337,20 +403,41 @@ class HHAutomation:
                 except Exception:
                     pass
 
-                logger.info(f"РЕЗЮМЕ УСПЕШНО ПОДНЯТО: {resume_name}!")
-                return True
+                # Валидация: изменилось ли состояние кнопки
+                btn_still_clickable = False
+                try:
+                    if button.is_visible(timeout=2000):
+                        btn_text = button.inner_text().strip().lower()
+                        if "поднять" in btn_text:
+                            btn_still_clickable = True
+                except Exception:
+                    btn_still_clickable = False
+
+                if not btn_still_clickable:
+                    logger.info(f"РЕЗЮМЕ УСПЕШНО ПОДНЯТО: {resume_name}!")
+                    return True
+                else:
+                    logger.warning(f"Кнопка осталась активной со словом 'Поднять' после клика. Возможно, клик не прошел.")
+                    raise RuntimeError("Кнопка поднятия осталась видимой и активной после клика.")
+
             except Exception as e:
                 logger.error(f"Ошибка при клике на кнопку подъема: {e}")
                 self._save_screenshot("button_click_failed")
-                return False
+                raise  # Выбрасываем для срабатывания ретрая
         else:
             logger.warning(f"Кнопка 'Поднять в поиске' не найдена для {resume_name}. Возможно, время еще не пришло или резюме скрыто.")
             self._save_screenshot("button_not_available")
             return False
 
     def close(self):
-        if self.context: self.context.close()
-        if self.browser: self.browser.close()
+        try:
+            if self.context: self.context.close()
+        except Exception:
+            pass
+        try:
+            if self.browser: self.browser.close()
+        except Exception:
+            pass
         logger.info("Браузер закрыт, ресурсы освобождены.")
 
 
@@ -403,6 +490,8 @@ def run_update_for_resume(target_id=None):
         logger.warning(f"Нет активных резюме для обработки (target_id={target_id}).")
         return
 
+    max_retries = 3
+
     with sync_playwright() as playwright:
         hh = HHAutomation(playwright, email=email, password=password, target_id=target_id)
         try:
@@ -417,18 +506,65 @@ def run_update_for_resume(target_id=None):
                 resume_name = item.get("name")
 
                 logger.info(f"=== НАЧАЛО ОБРАБОТКИ {resume_name} ({resume_id}) ===")
-                success = hh.raise_resume(item)
+                
+                success = False
+                last_error = None
+
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        if attempt > 1:
+                            logger.info(f"--- Повторная попытка {attempt}/{max_retries} для {resume_name} ---")
+                            # Проверяем, жив ли браузер и страница
+                            if hh.page.is_closed() or (hh.browser and not hh.browser.is_connected()):
+                                logger.warning("Браузер был закрыт, переинициализирую...")
+                                hh.close()
+                                hh.launch_browser(headless=True)
+                                if not hh.is_logged_in(first_url):
+                                    hh.perform_login()
+                            else:
+                                hh.page.wait_for_timeout(5000)
+
+                        success = hh.raise_resume(item)
+                        if success:
+                            break
+                        else:
+                            # Если вернулся False без исключения - кнопка не найдена/еще не наступило время
+                            logger.info(f"Кнопка поднятия еще не доступна по времени (или резюме скрыто). Ретраи не требуются.")
+                            break
+
+                    except Exception as exc:
+                        last_error = exc
+                        logger.error(f"Попытка {attempt}/{max_retries} завершилась сбоем: {exc}")
+                        if attempt < max_retries:
+                            wait_sec = attempt * 15
+                            logger.info(f"Ожидание {wait_sec} сек перед повторной попыткой {attempt + 1}/{max_retries}...")
+                            try:
+                                if not hh.page.is_closed():
+                                    hh.page.wait_for_timeout(wait_sec * 1000)
+                            except Exception:
+                                pass
 
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                last_res_str = "УСПЕШНО ПОДНЯТО" if success else "Кнопка недоступна"
-                update_resume_status(resume_id, now_str, last_res_str)
+                if success:
+                    last_res_str = "УСПЕШНО ПОДНЯТО"
+                elif last_error:
+                    last_res_str = f"Ошибка ({str(last_error)[:40]})"
+                else:
+                    last_res_str = "Кнопка недоступна"
 
-                logger.info(f"=== ЗАВЕРШЕНО: {resume_name} ===\n")
+                update_resume_status(resume_id, now_str, last_res_str)
+                logger.info(f"=== ЗАВЕРШЕНО: {resume_name} (Результат: {last_res_str}) ===\n")
 
         except Exception as e:
-            logger.critical(f"Скрипт завершился с ошибкой: {e}")
+            logger.critical(f"Скрипт завершился с критической ошибкой: {e}")
         finally:
             hh.close()
+            if lock_file:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    lock_file.close()
+                except Exception:
+                    pass
 
 def main():
     parser = argparse.ArgumentParser(description="HH Resume Auto-Updater")
