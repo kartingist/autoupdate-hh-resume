@@ -162,7 +162,7 @@ def sync_crontab_with_config(cfg_data):
         print("No valid cron entries generated, skipping crontab overwrite.")
         return
 
-    # Preserve non-HH lines (e.g. tunnel_watchdog.sh, keep_adb_alive.sh) from current crontab
+    # Preserve non-HH lines from current crontab
     try:
         existing = subprocess.check_output(["crontab", "-l"], stderr=subprocess.DEVNULL).decode()
     except subprocess.CalledProcessError:
@@ -219,15 +219,19 @@ INDEX_HTML = """<!DOCTYPE html>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #0f172a;
+            --bg-color: #0b1120;
             --card-bg: #1e293b;
-            --accent-blue: #3b82f6;
-            --accent-blue-hover: #2563eb;
+            --card-bg-subtle: #172033;
+            --accent-blue: #38bdf8;
+            --accent-blue-hover: #0ea5e9;
             --accent-green: #10b981;
+            --accent-green-hover: #059669;
             --accent-red: #ef4444;
+            --accent-amber: #f59e0b;
             --text-main: #f8fafc;
             --text-muted: #94a3b8;
             --border-color: #334155;
+            --border-color-focus: #38bdf8;
         }
         * { box-sizing: border-box; }
         body {
@@ -235,37 +239,72 @@ INDEX_HTML = """<!DOCTYPE html>
             background: var(--bg-color);
             color: var(--text-main);
             margin: 0;
-            padding: 30px 15px;
+            padding: 30px 16px;
             min-height: 100vh;
         }
         .container { max-width: 1280px; margin: 0 auto; }
+        
+        /* Focus visible for accessibility */
+        *:focus-visible {
+            outline: 2px solid var(--accent-blue);
+            outline-offset: 2px;
+        }
+
         .header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 20px;
-            padding-bottom: 16px;
+            margin-bottom: 24px;
+            padding-bottom: 18px;
             border-bottom: 1px solid var(--border-color);
+            flex-wrap: wrap;
+            gap: 16px;
         }
-        .header h1 { font-size: 22px; margin: 0; font-weight: 700; }
-        
+        .header-title-box { display: flex; flex-direction: column; gap: 4px; }
+        .header h1 { font-size: 22px; margin: 0; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+        .system-tags {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 6px;
+            flex-wrap: wrap;
+        }
+        .tag-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11.5px;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 12px;
+            background: #1e293b;
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+        }
+        .tag-badge.active {
+            background: rgba(16, 185, 129, 0.12);
+            border-color: rgba(16, 185, 129, 0.3);
+            color: var(--accent-green);
+        }
+
         .auth-card {
             background: var(--card-bg);
             border-radius: 16px;
-            padding: 20px;
+            padding: 20px 24px;
             border: 1px solid var(--border-color);
             margin-bottom: 24px;
             display: flex;
             flex-wrap: wrap;
             gap: 16px;
             align-items: flex-end;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
         }
         .auth-title {
             width: 100%;
             font-size: 15px;
             font-weight: 700;
             margin: 0;
-            color: #38bdf8;
+            color: var(--accent-blue);
             display: flex;
             align-items: center;
             gap: 8px;
@@ -273,7 +312,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(540px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
             gap: 24px;
         }
         .card {
@@ -285,18 +324,24 @@ INDEX_HTML = """<!DOCTYPE html>
             display: flex;
             flex-direction: column;
             gap: 16px;
+            transition: border-color 0.2s;
+        }
+        .card:hover {
+            border-color: #475569;
         }
         .card-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
+            gap: 12px;
         }
         
         .switch {
             position: relative;
             display: inline-block;
-            width: 50px;
+            width: 48px;
             height: 26px;
+            flex-shrink: 0;
         }
         .switch input { opacity: 0; width: 0; height: 0; }
         .slider {
@@ -304,7 +349,7 @@ INDEX_HTML = """<!DOCTYPE html>
             cursor: pointer;
             top: 0; left: 0; right: 0; bottom: 0;
             background-color: #475569;
-            transition: .3s;
+            transition: .25s ease-in-out;
             border-radius: 26px;
         }
         .slider:before {
@@ -315,11 +360,11 @@ INDEX_HTML = """<!DOCTYPE html>
             left: 3px;
             bottom: 3px;
             background-color: white;
-            transition: .3s;
+            transition: .25s ease-in-out;
             border-radius: 50%;
         }
         input:checked + .slider { background-color: var(--accent-green); }
-        input:checked + .slider:before { transform: translateX(24px); }
+        input:checked + .slider:before { transform: translateX(22px); }
 
         .field-group {
             display: flex;
@@ -344,13 +389,15 @@ INDEX_HTML = """<!DOCTYPE html>
             color: var(--text-main);
             font-size: 13.5px;
             font-family: inherit;
+            transition: border-color 0.2s;
         }
         .input-text:focus {
             outline: none;
-            border-color: var(--accent-blue);
+            border-color: var(--border-color-focus);
         }
         .input-text.dirty {
-            border-color: #f59e0b;
+            border-color: var(--accent-amber);
+            box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.2);
         }
 
         .status-badge {
@@ -372,6 +419,7 @@ INDEX_HTML = """<!DOCTYPE html>
         .btn-group {
             display: flex;
             gap: 12px;
+            flex-wrap: wrap;
         }
         .btn {
             padding: 10px 16px;
@@ -385,47 +433,180 @@ INDEX_HTML = """<!DOCTYPE html>
             align-items: center;
             justify-content: center;
             gap: 6px;
+            min-height: 40px;
         }
         .btn-save { background: #334155; color: #ffffff; }
         .btn-save:hover { background: #475569; }
-        .btn-trigger { background: var(--accent-blue); color: #ffffff; flex:1; }
-        .btn-trigger:hover { background: var(--accent-blue-hover); }
+        .btn-trigger { background: var(--accent-blue); color: #090d16; font-weight: 700; flex: 1; }
+        .btn-trigger:hover { background: var(--accent-blue-hover); color: #ffffff; }
         .btn-add { background: var(--accent-green); color: #ffffff; }
-        .btn-add:hover { background: #059669; }
-        .btn-delete { background: rgba(239, 68, 68, 0.2); color: var(--accent-red); padding: 6px 12px; font-size: 12px; }
-        .btn-delete:hover { background: rgba(239, 68, 68, 0.4); }
+        .btn-add:hover { background: var(--accent-green-hover); }
+        .btn-delete { background: rgba(239, 68, 68, 0.15); color: var(--accent-red); padding: 6px 12px; font-size: 12px; }
+        .btn-delete:hover { background: rgba(239, 68, 68, 0.35); }
+        .btn-toggle-log {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-toggle-log:hover {
+            color: var(--text-main);
+            border-color: #64748b;
+        }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .log-box {
-            background: #090d16;
+            background: #060911;
             border: 1px solid var(--border-color);
             border-radius: 10px;
-            padding: 14px;
+            padding: 12px;
             font-family: 'Consolas', 'Courier New', monospace;
             font-size: 12px;
             line-height: 1.5;
             color: #38bdf8;
-            height: 380px;
+            height: 160px;
             overflow-y: auto;
             white-space: pre-wrap;
             word-break: break-all;
+            transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        .log-box::-webkit-scrollbar { width: 8px; }
-        .log-box::-webkit-scrollbar-track { background: #0b0f19; border-radius: 4px; }
+        .log-box.expanded {
+            height: 380px;
+        }
+        .log-box::-webkit-scrollbar { width: 6px; }
+        .log-box::-webkit-scrollbar-track { background: #0b0f19; }
         .log-box::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
         .log-box::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+        /* Toast notifications container */
+        #toast-container {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            z-index: 99999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 380px;
+            width: calc(100% - 48px);
+            pointer-events: none;
+        }
+        .toast {
+            pointer-events: auto;
+            background: rgba(30, 41, 59, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px 18px;
+            color: var(--text-main);
+            font-size: 13.5px;
+            font-weight: 500;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            transition: opacity 0.3s, transform 0.3s;
+        }
+        .toast.hide {
+            opacity: 0;
+            transform: translateX(40px);
+        }
+        .toast-success { border-left: 4px solid var(--accent-green); }
+        .toast-error { border-left: 4px solid var(--accent-red); }
+        .toast-info { border-left: 4px solid var(--accent-blue); }
+
+        @keyframes slideInRight {
+            from { opacity: 0; transform: translateX(50px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        /* Modal Dialog */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(11, 17, 32, 0.75);
+            backdrop-filter: blur(6px);
+            z-index: 99998;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+        }
+        .modal-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .modal-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 24px;
+            max-width: 460px;
+            width: 100%;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            transform: scale(0.95);
+            transition: transform 0.2s ease;
+        }
+        .modal-overlay.active .modal-card {
+            transform: scale(1);
+        }
+        .modal-title { margin: 0; font-size: 17px; font-weight: 700; }
+        .modal-body { font-size: 14px; color: var(--text-muted); line-height: 1.5; margin: 0; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+
+        /* Empty state */
+        .empty-card {
+            grid-column: 1 / -1;
+            background: var(--card-bg-subtle);
+            border: 2px dashed var(--border-color);
+            border-radius: 16px;
+            padding: 48px 24px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+        }
+
+        /* Mobile adaptivity */
+        @media (max-width: 640px) {
+            body { padding: 18px 12px; }
+            .header { flex-direction: column; align-items: flex-start; gap: 14px; }
+            .auth-card { padding: 16px; }
+            .card { padding: 18px; }
+            .card-header { flex-wrap: wrap; }
+            .card-header input { width: 100% !important; margin-bottom: 8px; }
+            .btn-group { flex-direction: column; }
+            .btn { width: 100%; min-height: 44px; }
+            .btn-trigger { order: -1; }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <div>
+            <div class="header-title-box">
                 <h1>💼 HH Resume Auto-Update Control Center</h1>
-                <div style="font-size: 13px; color: var(--text-muted); margin-top:4px;">Управление аккаунтом и автоподнятием резюме (MSK)</div>
+                <div style="font-size: 13px; color: var(--text-muted);">Интеллектуальный автоподъем резюме на HeadHunter (MSK)</div>
+                <div class="system-tags">
+                    <span id="tg-status-tag" class="tag-badge">🤖 Telegram: проверка...</span>
+                    <span id="session-status-tag" class="tag-badge">🔐 Сессия: проверка...</span>
+                </div>
             </div>
-            <div style="display:flex; gap:10px;">
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
                 <button class="btn btn-add" onclick="addNewResume()">➕ Добавить резюме</button>
-                <button class="btn btn-save" onclick="loadData()">🔄 Обновить статус</button>
+                <button class="btn btn-save" onclick="manualRefresh()">🔄 Обновить статус</button>
             </div>
         </div>
 
@@ -443,14 +624,73 @@ INDEX_HTML = """<!DOCTYPE html>
         </div>
 
         <div class="grid" id="resumes-container">
-            <!-- Dynamic Resume Cards -->
+            <!-- Dynamic Resume Cards / Empty State -->
+        </div>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div id="toast-container"></div>
+
+    <!-- Confirm Dialog Modal -->
+    <div id="confirm-modal" class="modal-overlay">
+        <div class="modal-card">
+            <h3 class="modal-title" id="confirm-modal-title">Подтверждение</h3>
+            <p class="modal-body" id="confirm-modal-text"></p>
+            <div class="modal-actions">
+                <button class="btn btn-save" id="confirm-btn-cancel">Отмена</button>
+                <button class="btn btn-trigger" id="confirm-btn-ok">Подтвердить</button>
+            </div>
         </div>
     </div>
 
     <script>
-        let currentFullConfig = { auth: {}, resumes: [] };
+        let currentFullConfig = { auth: {}, resumes: [], system: {} };
         let loadedResumeIds = [];
-        let dirtyFields = {}; // { elementId: originalValue }
+        let dirtyFields = {}; // { elementId: true }
+        let logExpandedState = {}; // { resumeId: bool }
+
+        // --- Toast System ---
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            
+            let icon = 'ℹ️';
+            if (type === 'success') icon = '✅';
+            if (type === 'error') icon = '⚠️';
+            
+            toast.innerHTML = `<span style="font-size:16px;">${icon}</span><span>${message}</span>`;
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.classList.add('hide');
+                setTimeout(() => toast.remove(), 320);
+            }, 3500);
+        }
+
+        // --- Modal Confirmation System ---
+        function showConfirm(title, message, okText = 'Подтвердить', cancelText = 'Отмена') {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirm-modal');
+                document.getElementById('confirm-modal-title').textContent = title;
+                document.getElementById('confirm-modal-text').textContent = message;
+                
+                const btnOk = document.getElementById('confirm-btn-ok');
+                const btnCancel = document.getElementById('confirm-btn-cancel');
+                btnOk.textContent = okText;
+                btnCancel.textContent = cancelText;
+
+                const cleanup = () => {
+                    modal.classList.remove('active');
+                    btnOk.onclick = null;
+                    btnCancel.onclick = null;
+                };
+
+                btnOk.onclick = () => { cleanup(); resolve(true); };
+                btnCancel.onclick = () => { cleanup(); resolve(false); };
+                modal.classList.add('active');
+            });
+        }
 
         function markDirty(elId) {
             const el = document.getElementById(elId);
@@ -468,14 +708,36 @@ INDEX_HTML = """<!DOCTYPE html>
             }
         }
 
+        function toggleLog(id) {
+            logExpandedState[id] = !logExpandedState[id];
+            const lb = document.getElementById('logbox-' + id);
+            const btn = document.getElementById('log-toggle-btn-' + id);
+            if (lb && btn) {
+                if (logExpandedState[id]) {
+                    lb.classList.add('expanded');
+                    btn.textContent = 'Свернуть ▲';
+                } else {
+                    lb.classList.remove('expanded');
+                    btn.textContent = 'Развернуть ▼';
+                }
+            }
+        }
+
         async function handleBlurResume(id, fieldType) {
             const elId = fieldType + '-' + id;
             if (dirtyFields[elId]) {
-                const item = currentFullConfig.resumes.find(r => r.id === id);
+                const item = (currentFullConfig.resumes || []).find(r => r.id === id);
                 const fieldName = fieldType === 'name' ? 'название' : (fieldType === 'url' ? 'ссылку' : 'время');
                 const targetTitle = item ? (item.name || id) : id;
                 
-                if (confirm('Вы изменили ' + fieldName + ' для "' + targetTitle + '". Сохранить изменения?')) {
+                const confirmed = await showConfirm(
+                    'Несохраненные изменения',
+                    `Вы изменили ${fieldName} для "${targetTitle}". Сохранить изменения?`,
+                    'Сохранить',
+                    'Отменить'
+                );
+
+                if (confirmed) {
                     await saveResume(id);
                 } else {
                     clearDirty(elId);
@@ -486,13 +748,25 @@ INDEX_HTML = """<!DOCTYPE html>
 
         async function handleBlurAuth(fieldId) {
             if (dirtyFields[fieldId]) {
-                if (confirm('Вы изменили данные входа HH.ru. Сохранить авторизацию?')) {
+                const confirmed = await showConfirm(
+                    'Сохранение авторизации',
+                    'Вы изменили учетные данные HH.ru. Сохранить изменения?',
+                    'Сохранить',
+                    'Отменить'
+                );
+
+                if (confirmed) {
                     await saveAuth();
                 } else {
                     clearDirty(fieldId);
                     await loadData();
                 }
             }
+        }
+
+        async function manualRefresh() {
+            await loadData();
+            showToast('Статус синхронизирован с сервером', 'info');
         }
 
         async function loadData() {
@@ -504,6 +778,21 @@ INDEX_HTML = """<!DOCTYPE html>
                 }
                 currentFullConfig = await res.json();
                 
+                // Header status tags
+                const tgTag = document.getElementById('tg-status-tag');
+                if (tgTag) {
+                    const tgOk = currentFullConfig.system?.telegram_enabled;
+                    tgTag.className = 'tag-badge ' + (tgOk ? 'active' : '');
+                    tgTag.textContent = tgOk ? `🤖 Telegram: активен (${currentFullConfig.system?.telegram_chat_id})` : '🤖 Telegram: не настроен';
+                }
+
+                const sessTag = document.getElementById('session-status-tag');
+                if (sessTag) {
+                    const hasAuth = Boolean(currentFullConfig.auth?.email);
+                    sessTag.className = 'tag-badge ' + (hasAuth ? 'active' : '');
+                    sessTag.textContent = hasAuth ? '🔐 Учетная запись: задана' : '⚠️ Учетная запись: отсутствует';
+                }
+
                 const emailInp = document.getElementById('auth-email');
                 if (emailInp && !dirtyFields['auth-email'] && document.activeElement !== emailInp) {
                     emailInp.value = currentFullConfig.auth?.email || '';
@@ -523,17 +812,34 @@ INDEX_HTML = """<!DOCTYPE html>
             const container = document.getElementById('resumes-container');
             const currentIds = resumesList.map(r => r.id);
 
+            // Empty state check
+            if (!resumesList || resumesList.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-card">
+                        <div style="font-size:36px;">📭</div>
+                        <h3 style="margin:0; font-size:18px;">Список резюме пуст</h3>
+                        <div style="color:var(--text-muted); font-size:13.5px; max-width:360px;">
+                            Добавьте ссылку на ваше резюме на hh.ru и задайте интервал автоподъема.
+                        </div>
+                        <button class="btn btn-add" onclick="addNewResume()">➕ Добавить первое резюме</button>
+                    </div>
+                `;
+                loadedResumeIds = [];
+                return;
+            }
+
             if (JSON.stringify(currentIds) !== JSON.stringify(loadedResumeIds)) {
                 container.innerHTML = '';
-                resumesList.forEach((item, index) => {
+                resumesList.forEach((item) => {
+                    const isExpanded = Boolean(logExpandedState[item.id]);
                     const card = document.createElement('div');
                     card.className = 'card';
                     card.id = 'card-' + item.id;
                     card.innerHTML = `
                         <div class="card-header">
-                            <input type="text" class="input-text" style="font-weight:700; font-size:16px; width:65%;" id="name-${item.id}" value="${item.name || ''}" placeholder="Название резюме" oninput="markDirty('name-${item.id}')" onblur="handleBlurResume('${item.id}', 'name')">
+                            <input type="text" class="input-text" style="font-weight:700; font-size:15px; width:65%;" id="name-${item.id}" value="${item.name || ''}" placeholder="Название резюме" oninput="markDirty('name-${item.id}')" onblur="handleBlurResume('${item.id}', 'name')">
                             <div style="display:flex; align-items:center; gap:12px;">
-                                <label class="switch">
+                                <label class="switch" title="Включение/отключение расписания">
                                     <input type="checkbox" id="enable-${item.id}" onchange="toggleEnable('${item.id}')">
                                     <span class="slider"></span>
                                 </label>
@@ -543,7 +849,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
                         <div class="field-group">
                             <label class="field-label">Ссылка на резюме (HH URL)</label>
-                            <input type="text" class="input-text" id="url-${item.id}" placeholder="https://krasnodar.hh.ru/resume/..." oninput="markDirty('url-${item.id}')" onblur="handleBlurResume('${item.id}', 'url')">
+                            <input type="text" class="input-text" id="url-${item.id}" placeholder="https://hh.ru/resume/..." oninput="markDirty('url-${item.id}')" onblur="handleBlurResume('${item.id}', 'url')">
                         </div>
 
                         <div class="field-group">
@@ -551,19 +857,22 @@ INDEX_HTML = """<!DOCTYPE html>
                             <input type="text" class="input-text" id="sched-${item.id}" placeholder="07:00, 11:01, 15:02, 19:03, 23:04" oninput="markDirty('sched-${item.id}')" onblur="handleBlurResume('${item.id}', 'sched')">
                         </div>
 
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                             <span class="status-badge" id="badge-${item.id}"></span>
                             <div style="font-size:12px; color:var(--text-muted);" id="statustext-${item.id}"></div>
                         </div>
 
                         <div class="btn-group">
-                            <button class="btn btn-save" onclick="saveResume('${item.id}')">💾 Сохранить настройки</button>
+                            <button class="btn btn-save" onclick="saveResume('${item.id}')">💾 Сохранить</button>
                             <button class="btn btn-trigger" id="btn-trig-${item.id}" onclick="triggerResume('${item.id}')"></button>
                         </div>
 
                         <div class="field-group">
-                            <label class="field-label">📜 Лог выполнения</label>
-                            <div class="log-box" id="logbox-${item.id}"></div>
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <label class="field-label" style="margin:0;">📜 Лог выполнения</label>
+                                <button type="button" class="btn-toggle-log" id="log-toggle-btn-${item.id}" onclick="toggleLog('${item.id}')">${isExpanded ? 'Свернуть ▲' : 'Развернуть ▼'}</button>
+                            </div>
+                            <div class="log-box ${isExpanded ? 'expanded' : ''}" id="logbox-${item.id}"></div>
                         </div>
                     `;
                     container.appendChild(card);
@@ -629,14 +938,14 @@ INDEX_HTML = """<!DOCTYPE html>
             const email = document.getElementById('auth-email').value.trim();
             const password = document.getElementById('auth-password').value.trim();
             if (!email) {
-                alert('Заполните Email');
+                showToast('Пожалуйста, укажите Email аккаунта', 'error');
                 return;
             }
             currentFullConfig.auth = { email, password };
             clearDirty('auth-email');
             clearDirty('auth-password');
             await saveConfigToServer();
-            alert('Учетные данные HH.ru сохранены!');
+            showToast('Учетные данные HH.ru сохранены!', 'success');
         }
 
         async function addNewResume() {
@@ -652,29 +961,39 @@ INDEX_HTML = """<!DOCTYPE html>
                 last_result: 'Новое резюме',
                 log_file: 'logs/' + newId + '.log'
             };
+            if (!currentFullConfig.resumes) currentFullConfig.resumes = [];
             currentFullConfig.resumes.push(newResume);
             await saveConfigToServer();
+            showToast('Новое резюме добавлено в список', 'info');
         }
 
         async function deleteResume(id) {
-            const item = currentFullConfig.resumes.find(r => r.id === id);
+            const item = (currentFullConfig.resumes || []).find(r => r.id === id);
             const name = item ? item.name : id;
-            if (confirm('Вы уверены, что хотите удалить ' + name + '?')) {
+            const confirmed = await showConfirm(
+                'Удаление резюме',
+                `Вы уверены, что хотите удалить "${name}"? Расписание автоподъема будет остановлено.`,
+                'Удалить',
+                'Отмена'
+            );
+            if (confirmed) {
                 currentFullConfig.resumes = currentFullConfig.resumes.filter(r => r.id !== id);
                 await saveConfigToServer();
+                showToast(`Резюме "${name}" удалено`, 'info');
             }
         }
 
         async function toggleEnable(id) {
-            const item = currentFullConfig.resumes.find(r => r.id === id);
+            const item = (currentFullConfig.resumes || []).find(r => r.id === id);
             if (item) {
                 item.enabled = document.getElementById('enable-' + id).checked;
                 await saveConfigToServer();
+                showToast(`Автоподъем ${item.enabled ? 'включен' : 'приостановлен'}`, 'info');
             }
         }
 
         async function saveResume(id) {
-            const item = currentFullConfig.resumes.find(r => r.id === id);
+            const item = (currentFullConfig.resumes || []).find(r => r.id === id);
             if (item) {
                 const nameInp = document.getElementById('name-' + id);
                 const urlInp = document.getElementById('url-' + id);
@@ -692,6 +1011,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 clearDirty('sched-' + id);
 
                 await saveConfigToServer();
+                showToast(`Настройки "${item.name}" сохранены!`, 'success');
             }
         }
 
@@ -704,13 +1024,16 @@ INDEX_HTML = """<!DOCTYPE html>
                 });
                 await loadData();
             } catch (err) {
-                alert('Ошибка при сохранении на сервер');
+                showToast('Ошибка при сохранении на сервер', 'error');
             }
         }
 
         async function triggerResume(id) {
             const btn = document.getElementById('btn-trig-' + id);
-            if (btn) btn.disabled = true;
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '⏳ Запуск...';
+            }
 
             try {
                 const res = await fetch('/api/trigger', {
@@ -720,11 +1043,13 @@ INDEX_HTML = """<!DOCTYPE html>
                 });
                 const data = await res.json();
                 if (!data.success) {
-                    alert(data.message || 'Ошибка запуска');
+                    showToast(data.message || 'Ошибка запуска автоподъема', 'error');
+                } else {
+                    showToast('Процесс автоподъема запущен!', 'info');
                 }
                 setTimeout(loadData, 1000);
             } catch (err) {
-                alert('Ошибка сети при поднять резюме');
+                showToast('Ошибка сети при запуске автоподъема', 'error');
             }
         }
 
@@ -893,6 +1218,15 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 item["is_running"] = resume_id in running_jobs
 
             cfg_data["resumes"] = resumes
+
+            # System status metadata
+            tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+            tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+            cfg_data["system"] = {
+                "telegram_enabled": bool(tg_token and tg_chat),
+                "telegram_chat_id": tg_chat or "",
+                "port": PORT
+            }
 
             # Mask real password for safety in UI
             if cfg_data.get("auth", {}).get("password"):
