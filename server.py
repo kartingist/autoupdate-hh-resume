@@ -4,6 +4,10 @@ import json
 import os
 import threading
 import subprocess
+import fcntl
+import tempfile
+import base64
+import re
 
 def load_env_file():
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +22,9 @@ def load_env_file():
                         os.environ[k.strip()] = v.strip().strip('\"\'')
         except Exception as e:
             print('Error loading .env file:', e)
+
+load_env_file()
+
 BASE_DIR = os.environ.get("HH_BASE_DIR") or os.path.dirname(os.path.abspath(__file__))
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
 SCREENSHOTS_DIR = os.path.join(LOGS_DIR, "screenshots")
@@ -28,6 +35,26 @@ ENV_FILE = os.path.join(BASE_DIR, ".env")
 VENV_PYTHON = os.environ.get("HH_VENV_PYTHON") or os.path.join(BASE_DIR, "venv/bin/python")
 
 PORT = int(os.environ.get("HH_DASHBOARD_PORT", 8883))
+
+# Basic Authentication Settings
+DASHBOARD_USER = os.environ.get("HH_DASHBOARD_USER", "")
+DASHBOARD_PASS = os.environ.get("HH_DASHBOARD_PASS", "")
+
+def is_authenticated(headers) -> bool:
+    if not DASHBOARD_USER or not DASHBOARD_PASS:
+        return True  # Auth is disabled if credentials not set
+    auth_header = headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(auth_header.split(" ", 1)[1]).decode("utf-8")
+        user, pwd = decoded.split(":", 1)
+        return user == DASHBOARD_USER and pwd == DASHBOARD_PASS
+    except Exception:
+        return False
+
+def is_valid_resume_id(resume_id: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z0-9_-]+$", str(resume_id)))
 
 running_jobs = {} # {resume_id: status_msg}
 
@@ -55,13 +82,55 @@ def load_resumes_config():
     }
 
 def save_resumes_config(cfg_data):
+    lock_cfg_path = os.path.join(BASE_DIR, "resumes_config.lock")
+    lock_fd = None
     try:
+        lock_fd = open(lock_cfg_path, "a+")
+        try:
+            os.chmod(lock_cfg_path, 0o666)
+        except Exception:
+            pass
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        # Merge password and resume statuses from disk to avoid race conditions and masking overwrite
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    disk_data = json.load(f)
+                    if isinstance(disk_data, dict):
+                        # Password protection: if password was masked or empty, retain existing
+                        submitted_pwd = cfg_data.get("auth", {}).get("password", "").strip()
+                        disk_pwd = disk_data.get("auth", {}).get("password") or os.environ.get("HH_PASSWORD", "")
+                        if not submitted_pwd or submitted_pwd in ("••••••••", "********"):
+                            if "auth" not in cfg_data:
+                                cfg_data["auth"] = {}
+                            cfg_data["auth"]["password"] = disk_pwd
+
+                        # Merge last_time / last_result
+                        disk_resumes = {r["id"]: r for r in disk_data.get("resumes", []) if isinstance(r, dict) and "id" in r}
+                        for r in cfg_data.get("resumes", []):
+                            r_id = r.get("id")
+                            if r_id in disk_resumes:
+                                if not r.get("last_time") or r.get("last_time") == "-":
+                                    r["last_time"] = disk_resumes[r_id].get("last_time", "-")
+                                if not r.get("last_result") or r.get("last_result") == "Новое резюме":
+                                    r["last_result"] = disk_resumes[r_id].get("last_result", "Новое резюме")
+            except Exception as merge_err:
+                print("Warning merging config with disk state:", merge_err)
+
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg_data, f, ensure_ascii=False, indent=2)
-        pass
+
         sync_crontab_with_config(cfg_data)
     except Exception as e:
         print("Error saving config:", e)
+    finally:
+        if lock_fd:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+            except Exception:
+                pass
 
 def sync_crontab_with_config(cfg_data):
     resumes = cfg_data.get("resumes", [])
@@ -73,8 +142,9 @@ def sync_crontab_with_config(cfg_data):
         if not item.get("enabled", True):
             continue
         resume_id = item.get("id")
+        if not is_valid_resume_id(resume_id):
+            continue
         schedule = item.get("schedule", [])
-        log_file = os.path.join(LOGS_DIR, f"{resume_id}.log")
         
         for t_str in schedule:
             t_str = t_str.strip()
@@ -92,7 +162,7 @@ def sync_crontab_with_config(cfg_data):
         print("No valid cron entries generated, skipping crontab overwrite.")
         return
 
-    # Preserve non-HH lines (e.g. tunnel_watchdog.sh) from current crontab
+    # Preserve non-HH lines (e.g. tunnel_watchdog.sh, keep_adb_alive.sh) from current crontab
     try:
         existing = subprocess.check_output(["crontab", "-l"], stderr=subprocess.DEVNULL).decode()
     except subprocess.CalledProcessError:
@@ -101,27 +171,39 @@ def sync_crontab_with_config(cfg_data):
     all_lines = preserved + cron_lines
     new_crontab = "\n".join(all_lines) + "\n"
 
-    tmp_cron = "/tmp/new_crontab.txt"
+    tmp_path = None
     try:
-        with open(tmp_cron, "w", encoding="utf-8") as f:
-            f.write(new_crontab)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tf:
+            tf.write(new_crontab)
+            tmp_path = tf.name
+
         cron_user = os.environ.get("HH_CRON_USER") or "root"
-        cmd_args = ["crontab", "-u", cron_user, tmp_cron] if cron_user else ["crontab", tmp_cron]
+        cmd_args = ["crontab", "-u", cron_user, tmp_path] if cron_user else ["crontab", tmp_path]
         subprocess.run(cmd_args, check=True)
-        if os.path.exists(tmp_cron):
-            os.remove(tmp_cron)
         print("Crontab updated successfully!")
     except Exception as e:
         print("Error updating crontab:", e)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 def run_hh_update_thread(resume_id):
     global running_jobs
+    if not is_valid_resume_id(resume_id):
+        print(f"Invalid resume_id rejected: {resume_id}")
+        return
+
     running_jobs[resume_id] = "Поднятие резюме..."
     try:
         cron_user = os.environ.get("HH_CRON_USER") or "root"
-        sudo_prefix = f"sudo -u {cron_user} " if (cron_user and os.geteuid() == 0) else ""
-        cmd = f"cd {BASE_DIR} && {sudo_prefix}{VENV_PYTHON} main.py --resume-id {resume_id}"
-        subprocess.run(cmd, shell=True, check=True)
+        cmd = [VENV_PYTHON, "main.py", "--resume-id", resume_id]
+        if cron_user and os.geteuid() == 0 and cron_user != "root":
+            cmd = ["sudo", "-u", cron_user] + cmd
+        
+        subprocess.run(cmd, cwd=BASE_DIR, check=True)
     except Exception as e:
         print(f"Error running update for {resume_id}:", e)
     finally:
@@ -416,6 +498,10 @@ INDEX_HTML = """<!DOCTYPE html>
         async function loadData() {
             try {
                 const res = await fetch('/api/config');
+                if (res.status === 401) {
+                    location.reload();
+                    return;
+                }
                 currentFullConfig = await res.json();
                 
                 const emailInp = document.getElementById('auth-email');
@@ -542,8 +628,8 @@ INDEX_HTML = """<!DOCTYPE html>
         async function saveAuth() {
             const email = document.getElementById('auth-email').value.trim();
             const password = document.getElementById('auth-password').value.trim();
-            if (!email || !password) {
-                alert('Заполните Email и Пароль');
+            if (!email) {
+                alert('Заполните Email');
                 return;
             }
             currentFullConfig.auth = { email, password };
@@ -658,6 +744,17 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Connection", "close")
 
+    def require_auth(self) -> bool:
+        if not is_authenticated(self.headers):
+            self.send_response(401)
+            self.send_cors_headers()
+            self.send_header("WWW-Authenticate", 'Basic realm="HH Resume Control Center"')
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Unauthorized")
+            return False
+        return True
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_cors_headers()
@@ -665,6 +762,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if not self.require_auth():
+            return
+
         content_length = int(self.headers.get('Content-Length', 0))
         body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
         
@@ -712,7 +812,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
                     with open(session_file, "w", encoding="utf-8") as f:
                         json.dump(session_data, f, ensure_ascii=False, indent=2)
-                    pass
                     res = json.dumps({"success": True, "message": "Сессия HH.ru успешно сохранена!"}).encode("utf-8")
                 except Exception as e:
                     res = json.dumps({"success": False, "message": f"Ошибка сохранения: {e}"}).encode("utf-8")
@@ -729,7 +828,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/api/trigger":
             resume_id = body.get("resume_id", "resume1")
-            if resume_id in running_jobs:
+            if not is_valid_resume_id(resume_id):
+                res = json.dumps({"success": False, "message": "Некорректный ID резюме"}).encode("utf-8")
+            elif resume_id in running_jobs:
                 res = json.dumps({"success": False, "message": "Автоподъем уже выполняется"}).encode("utf-8")
             else:
                 t = threading.Thread(target=run_hh_update_thread, args=(resume_id,), daemon=True)
@@ -749,6 +850,9 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self.require_auth():
+            return
+
         if self.path == "/":
             encoded = INDEX_HTML.encode("utf-8")
             self.send_response(200)
@@ -789,6 +893,12 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 item["is_running"] = resume_id in running_jobs
 
             cfg_data["resumes"] = resumes
+
+            # Mask real password for safety in UI
+            if cfg_data.get("auth", {}).get("password"):
+                cfg_data["auth"]["password"] = "••••••••"
+                cfg_data["auth"]["password_saved"] = True
+
             res = json.dumps(cfg_data).encode("utf-8")
             self.send_response(200)
             self.send_cors_headers()

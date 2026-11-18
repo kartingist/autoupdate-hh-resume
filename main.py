@@ -4,7 +4,10 @@ import sys
 import re
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import argparse
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from playwright.sync_api import Playwright, sync_playwright, Page, BrowserContext, Browser
 
@@ -31,7 +34,8 @@ def setup_logger(target_id=None):
 
     if target_id:
         log_file = os.path.join(LOGS_DIR, f"{target_id}.log")
-        fh = logging.FileHandler(log_file, encoding='utf-8')
+        # Ротация логов: макс 5 МБ на файл, хранение до 3 ротированных архивов
+        fh = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
         fh.setFormatter(formatter)
         logger.addHandler(fh)
 
@@ -53,6 +57,73 @@ def load_env_file():
             print('Error loading .env file:', e)
 
 load_env_file()
+
+def send_telegram_notification(message: str, error_level: bool = True):
+    """Отправляет уведомление в Telegram через Bot API без внешних зависимостей."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        return
+
+    notify_success = os.environ.get("TELEGRAM_NOTIFY_ON_SUCCESS", "false").lower() in ("true", "1", "yes")
+    if not error_level and not notify_success:
+        return
+
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json", "User-Agent": "HH-AutoUpdater/2.0"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status != 200:
+                logger.warning(f"Telegram API вернул код {resp.status}")
+    except Exception as e:
+        logger.warning(f"Не удалось отправить уведомление в Telegram: {e}")
+
+def cleanup_old_screenshots(max_files: int = 30, max_age_days: int = 7):
+    """Удаляет устаревшие скриншоты, предотвращая переполнение дискового пространства."""
+    try:
+        if not os.path.exists(SCREENSHOTS_DIR):
+            return
+        now = datetime.now()
+        png_files = []
+        for fname in os.listdir(SCREENSHOTS_DIR):
+            if fname.endswith(".png"):
+                fpath = os.path.join(SCREENSHOTS_DIR, fname)
+                try:
+                    mtime = datetime.fromtimestamp(os.path.getmtime(fpath))
+                    png_files.append((fpath, mtime))
+                except Exception:
+                    pass
+
+        # Удаление скриншотов старше max_age_days
+        for fpath, mtime in png_files:
+            if (now - mtime).days > max_age_days:
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
+
+        # Удержание не более max_files самых свежих
+        remaining = [f for f in png_files if os.path.exists(f[0])]
+        remaining.sort(key=lambda x: x[1], reverse=True)
+        for fpath, _ in remaining[max_files:]:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Ошибка при очистке старых скриншотов: {e}")
 
 def load_resumes_config():
     if os.path.exists(CONFIG_FILE):
@@ -158,6 +229,7 @@ class HHAutomation:
                 filename = os.path.join(SCREENSHOTS_DIR, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 self.page.screenshot(path=filename, full_page=False, timeout=15000)
                 logger.info(f"Скриншот сохранен: {filename}")
+                cleanup_old_screenshots()
             except Exception as e:
                 logger.warning(f"Не удалось сохранить скриншот {name}: {e}")
 
@@ -268,6 +340,13 @@ class HHAutomation:
         except Exception as e:
             logger.error(f"Критическая ошибка при попытке логина: {e}")
             self._save_screenshot("login_failed")
+            send_telegram_notification(
+                f"⚠️ <b>[HH Auto-Updater] Сбой авторизации</b>\n"
+                f"Email: <code>{self.email}</code>\n"
+                f"Ошибка: <code>{str(e)[:250]}</code>\n"
+                f"<i>Проверьте актуальность учетных данных, 2FA или капчу на сервере.</i>",
+                error_level=True
+            )
             raise
 
     def raise_resume(self, resume_item: dict) -> bool:
@@ -443,6 +522,7 @@ class HHAutomation:
 
 def run_update_for_resume(target_id=None):
     setup_logger(target_id)
+    cleanup_old_screenshots()
 
     lock_filename = os.path.join(LOGS_DIR, f"{target_id or 'all'}.lock")
     lock_file = None
@@ -471,6 +551,7 @@ def run_update_for_resume(target_id=None):
 
     if not email or not password:
         logger.error("Логин и пароль HH.ru не заданы ни в .env, ни в конфигурации!")
+        send_telegram_notification("⚠️ <b>[HH Auto-Updater] Ошибка конфигурации</b>\nЛогин и пароль не заданы ни в .env, ни в веб-панели!", error_level=True)
         return
 
     if not resumes_list:
@@ -547,8 +628,21 @@ def run_update_for_resume(target_id=None):
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if success:
                     last_res_str = "УСПЕШНО ПОДНЯТО"
+                    send_telegram_notification(
+                        f"✅ <b>[HH Auto-Updater] Резюме поднято</b>\n"
+                        f"Резюме: <b>{resume_name}</b>\n"
+                        f"Время: {now_str}",
+                        error_level=False
+                    )
                 elif last_error:
                     last_res_str = f"Ошибка ({str(last_error)[:40]})"
+                    send_telegram_notification(
+                        f"❌ <b>[HH Auto-Updater] Ошибка автоподъема</b>\n"
+                        f"Резюме: <b>{resume_name}</b> (<code>{resume_id}</code>)\n"
+                        f"Ошибка: <code>{str(last_error)[:250]}</code>\n"
+                        f"Время: {now_str}",
+                        error_level=True
+                    )
                 else:
                     last_res_str = "Кнопка недоступна"
 
@@ -557,6 +651,11 @@ def run_update_for_resume(target_id=None):
 
         except Exception as e:
             logger.critical(f"Скрипт завершился с критической ошибкой: {e}")
+            send_telegram_notification(
+                f"🚨 <b>[HH Auto-Updater] Критический сбой скрипта</b>\n"
+                f"Ошибка: <code>{str(e)[:250]}</code>",
+                error_level=True
+            )
         finally:
             hh.close()
             if lock_file:
