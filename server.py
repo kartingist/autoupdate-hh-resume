@@ -8,6 +8,7 @@ import fcntl
 import tempfile
 import base64
 import re
+import shutil
 
 def load_env_file():
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,7 +20,7 @@ def load_env_file():
                     line = line.strip()
                     if line and not line.startswith('#') and '=' in line:
                         k, v = line.split('=', 1)
-                        os.environ[k.strip()] = v.strip().strip('\"\'')
+                        os.environ[k.strip()] = v.strip().strip('"\'')
         except Exception as e:
             print('Error loading .env file:', e)
 
@@ -53,35 +54,99 @@ def is_authenticated(headers) -> bool:
     except Exception:
         return False
 
-def is_valid_resume_id(resume_id: str) -> bool:
-    return bool(re.match(r"^[a-zA-Z0-9_-]+$", str(resume_id)))
+def is_valid_id(val: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z0-9_-]+$", str(val)))
 
 running_jobs = {} # {resume_id: status_msg}
 
 def load_resumes_config():
+    """Загружает конфиг с автоматической миграцией в мульти-аккаунтный формат."""
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list):
-                    data = {"auth": {"email": os.environ.get("HH_EMAIL", ""), "password": os.environ.get("HH_PASSWORD", "")}, "resumes": data}
                 
-                # Fill auth from env if empty
-                if not data.get("auth", {}).get("email"):
-                    data["auth"] = data.get("auth", {})
-                    data["auth"]["email"] = os.environ.get("HH_EMAIL", "")
-                if not data.get("auth", {}).get("password"):
-                    data["auth"] = data.get("auth", {})
-                    data["auth"]["password"] = os.environ.get("HH_PASSWORD", "")
+                # Старый формат: список резюме
+                if isinstance(data, list):
+                    data = {
+                        "accounts": [
+                            {
+                                "id": "acc_default",
+                                "name": "Основной профиль",
+                                "auth": {
+                                    "email": os.environ.get("HH_EMAIL", ""),
+                                    "password": os.environ.get("HH_PASSWORD", "")
+                                },
+                                "enabled": True,
+                                "resumes": data
+                            }
+                        ]
+                    }
+
+                # Старый формат: словарь с auth и resumes
+                elif isinstance(data, dict) and "accounts" not in data:
+                    data = {
+                        "accounts": [
+                            {
+                                "id": "acc_default",
+                                "name": "Основной профиль",
+                                "auth": data.get("auth", {
+                                    "email": os.environ.get("HH_EMAIL", ""),
+                                    "password": os.environ.get("HH_PASSWORD", "")
+                                }),
+                                "enabled": True,
+                                "resumes": data.get("resumes", [])
+                            }
+                        ]
+                    }
+
+                # Обеспечиваем наличие хотя бы одного профиля
+                accounts = data.get("accounts", [])
+                if not accounts:
+                    data["accounts"] = [
+                        {
+                            "id": "acc_default",
+                            "name": "Основной профиль",
+                            "auth": {
+                                "email": os.environ.get("HH_EMAIL", ""),
+                                "password": os.environ.get("HH_PASSWORD", "")
+                            },
+                            "enabled": True,
+                            "resumes": []
+                        }
+                    ]
+
+                # Проверяем наличие сессионного файла для acc_default, если мигрировали
+                acc_default_session = os.path.join(BASE_DIR, "hh_session_acc_default.json")
+                if not os.path.exists(acc_default_session):
+                    old_sess = os.path.join(BASE_DIR, "hh_session.json")
+                    if os.path.exists(old_sess):
+                        try:
+                            shutil.copy2(old_sess, acc_default_session)
+                        except Exception:
+                            pass
+
                 return data
         except Exception as e:
             print("Error loading config:", e)
+
     return {
-        "auth": {"email": os.environ.get("HH_EMAIL", ""), "password": os.environ.get("HH_PASSWORD", "")},
-        "resumes": []
+        "accounts": [
+            {
+                "id": "acc_default",
+                "name": "Основной профиль",
+                "auth": {
+                    "email": os.environ.get("HH_EMAIL", ""),
+                    "password": os.environ.get("HH_PASSWORD", "")
+                },
+                "enabled": True,
+                "resumes": []
+            }
+        ]
     }
 
 def save_resumes_config(cfg_data):
+    """Сохраняет конфигурацию с защитой flock и слиянием паролей и статусов."""
     lock_cfg_path = os.path.join(BASE_DIR, "resumes_config.lock")
     lock_fd = None
     try:
@@ -92,29 +157,45 @@ def save_resumes_config(cfg_data):
             pass
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
-        # Merge password and resume statuses from disk to avoid race conditions and masking overwrite
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     disk_data = json.load(f)
-                    if isinstance(disk_data, dict):
-                        # Password protection: if password was masked or empty, retain existing
-                        submitted_pwd = cfg_data.get("auth", {}).get("password", "").strip()
-                        disk_pwd = disk_data.get("auth", {}).get("password") or os.environ.get("HH_PASSWORD", "")
-                        if not submitted_pwd or submitted_pwd in ("••••••••", "********"):
-                            if "auth" not in cfg_data:
-                                cfg_data["auth"] = {}
-                            cfg_data["auth"]["password"] = disk_pwd
+                    
+                    # Приводим disk_data к accounts, если старый формат
+                    if isinstance(disk_data, list):
+                        disk_accounts = [{"id": "acc_default", "auth": {}, "resumes": disk_data}]
+                    elif isinstance(disk_data, dict) and "accounts" not in disk_data:
+                        disk_accounts = [{"id": "acc_default", "auth": disk_data.get("auth", {}), "resumes": disk_data.get("resumes", [])}]
+                    elif isinstance(disk_data, dict):
+                        disk_accounts = disk_data.get("accounts", [])
+                    else:
+                        disk_accounts = []
 
-                        # Merge last_time / last_result
-                        disk_resumes = {r["id"]: r for r in disk_data.get("resumes", []) if isinstance(r, dict) and "id" in r}
-                        for r in cfg_data.get("resumes", []):
-                            r_id = r.get("id")
-                            if r_id in disk_resumes:
-                                if not r.get("last_time") or r.get("last_time") == "-":
-                                    r["last_time"] = disk_resumes[r_id].get("last_time", "-")
-                                if not r.get("last_result") or r.get("last_result") == "Новое резюме":
-                                    r["last_result"] = disk_resumes[r_id].get("last_result", "Новое резюме")
+                    disk_acc_map = {a.get("id"): a for a in disk_accounts if isinstance(a, dict) and "id" in a}
+
+                    # Проходим по всем пришедшим аккаунтам
+                    for acc in cfg_data.get("accounts", []):
+                        acc_id = acc.get("id")
+                        disk_acc = disk_acc_map.get(acc_id)
+                        if disk_acc:
+                            # 1. Защита пароля: если замаскирован или пустой - сохраняем пароль с диска
+                            submitted_pwd = acc.get("auth", {}).get("password", "").strip()
+                            disk_pwd = disk_acc.get("auth", {}).get("password", "")
+                            if not submitted_pwd or submitted_pwd in ("••••••••", "********"):
+                                if "auth" not in acc:
+                                    acc["auth"] = {}
+                                acc["auth"]["password"] = disk_pwd
+
+                            # 2. Слияние статусов резюме (last_time, last_result)
+                            disk_resumes = {r["id"]: r for r in disk_acc.get("resumes", []) if isinstance(r, dict) and "id" in r}
+                            for r in acc.get("resumes", []):
+                                r_id = r.get("id")
+                                if r_id in disk_resumes:
+                                    if not r.get("last_time") or r.get("last_time") == "-":
+                                        r["last_time"] = disk_resumes[r_id].get("last_time", "-")
+                                    if not r.get("last_result") or r.get("last_result") == "Новое резюме":
+                                        r["last_result"] = disk_resumes[r_id].get("last_result", "Новое резюме")
             except Exception as merge_err:
                 print("Warning merging config with disk state:", merge_err)
 
@@ -133,40 +214,39 @@ def save_resumes_config(cfg_data):
                 pass
 
 def sync_crontab_with_config(cfg_data):
-    resumes = cfg_data.get("resumes", [])
-    if not resumes:
-        print("No resumes in config, skipping crontab sync.")
-        return
+    """Синхронизирует системный crontab со всеми активными резюме всех активных аккаунтов."""
+    accounts = cfg_data.get("accounts", [])
     cron_lines = []
-    for item in resumes:
-        if not item.get("enabled", True):
-            continue
-        resume_id = item.get("id")
-        if not is_valid_resume_id(resume_id):
-            continue
-        schedule = item.get("schedule", [])
-        
-        for t_str in schedule:
-            t_str = t_str.strip()
-            if ":" in t_str:
-                parts = t_str.split(":")
-                try:
-                    h = int(parts[0])
-                    m = int(parts[1])
-                    cron_line = f"{m} {h} * * * cd {BASE_DIR} && {VENV_PYTHON} main.py --resume-id {resume_id}"
-                    cron_lines.append(cron_line)
-                except ValueError:
-                    pass
 
-    if not cron_lines:
-        print("No valid cron entries generated, skipping crontab overwrite.")
-        return
+    for acc in accounts:
+        if not acc.get("enabled", True):
+            continue
+        resumes = acc.get("resumes", [])
+        for item in resumes:
+            if not item.get("enabled", True):
+                continue
+            resume_id = item.get("id")
+            if not is_valid_id(resume_id):
+                continue
+            schedule = item.get("schedule", [])
+            for t_str in schedule:
+                t_str = t_str.strip()
+                if ":" in t_str:
+                    parts = t_str.split(":")
+                    try:
+                        h = int(parts[0])
+                        m = int(parts[1])
+                        cron_line = f"{m} {h} * * * cd {BASE_DIR} && {VENV_PYTHON} main.py --resume-id {resume_id}"
+                        cron_lines.append(cron_line)
+                    except ValueError:
+                        pass
 
-    # Preserve non-HH lines from current crontab
+    # Чтение текущего crontab для сохранения строк, не относящихся к нашему автообновлению
     try:
         existing = subprocess.check_output(["crontab", "-l"], stderr=subprocess.DEVNULL).decode()
     except subprocess.CalledProcessError:
         existing = ""
+
     preserved = [l for l in existing.splitlines() if l.strip() and "main.py" not in l]
     all_lines = preserved + cron_lines
     new_crontab = "\n".join(all_lines) + "\n"
@@ -180,7 +260,7 @@ def sync_crontab_with_config(cfg_data):
         cron_user = os.environ.get("HH_CRON_USER") or "root"
         cmd_args = ["crontab", "-u", cron_user, tmp_path] if cron_user else ["crontab", tmp_path]
         subprocess.run(cmd_args, check=True)
-        print("Crontab updated successfully!")
+        print("Crontab updated successfully for multi-accounts!")
     except Exception as e:
         print("Error updating crontab:", e)
     finally:
@@ -192,7 +272,7 @@ def sync_crontab_with_config(cfg_data):
 
 def run_hh_update_thread(resume_id):
     global running_jobs
-    if not is_valid_resume_id(resume_id):
+    if not is_valid_id(resume_id):
         print(f"Invalid resume_id rejected: {resume_id}")
         return
 
@@ -215,18 +295,20 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HH Resume Auto-Update Control Center</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <title>HH Resume Multi-Account Control Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg-color: #0b1120;
             --card-bg: #1e293b;
             --card-bg-subtle: #172033;
+            --card-bg-elevated: #243247;
             --accent-blue: #38bdf8;
             --accent-blue-hover: #0ea5e9;
             --accent-green: #10b981;
             --accent-green-hover: #059669;
             --accent-red: #ef4444;
+            --accent-red-hover: #dc2626;
             --accent-amber: #f59e0b;
             --text-main: #f8fafc;
             --text-muted: #94a3b8;
@@ -242,812 +324,1287 @@ INDEX_HTML = """<!DOCTYPE html>
             padding: 30px 16px;
             min-height: 100vh;
         }
-        .container { max-width: 1280px; margin: 0 auto; }
+        .container { max-width: 1320px; margin: 0 auto; }
         
-        /* Focus visible for accessibility */
         *:focus-visible {
             outline: 2px solid var(--accent-blue);
             outline-offset: 2px;
         }
 
+        /* Хедер */
         .header {
             display: flex;
-            align-items: center;
             justify-content: space-between;
-            margin-bottom: 24px;
-            padding-bottom: 18px;
-            border-bottom: 1px solid var(--border-color);
+            align-items: center;
             flex-wrap: wrap;
             gap: 16px;
+            margin-bottom: 24px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
         }
-        .header-title-box { display: flex; flex-direction: column; gap: 4px; }
-        .header h1 { font-size: 22px; margin: 0; font-weight: 700; display: flex; align-items: center; gap: 10px; }
-        .system-tags {
+        .header-title {
             display: flex;
             align-items: center;
-            gap: 8px;
-            margin-top: 6px;
+            gap: 12px;
+        }
+        .header-title h1 {
+            font-size: 24px;
+            font-weight: 800;
+            margin: 0;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header-badges {
+            display: flex;
+            align-items: center;
+            gap: 10px;
             flex-wrap: wrap;
         }
-        .tag-badge {
+        .sys-badge {
             display: inline-flex;
             align-items: center;
-            gap: 5px;
-            font-size: 11.5px;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 9999px;
+            font-size: 12px;
             font-weight: 600;
-            padding: 3px 9px;
-            border-radius: 12px;
-            background: #1e293b;
+            background: rgba(30, 41, 59, 0.8);
             border: 1px solid var(--border-color);
             color: var(--text-muted);
         }
-        .tag-badge.active {
-            background: rgba(16, 185, 129, 0.12);
-            border-color: rgba(16, 185, 129, 0.3);
-            color: var(--accent-green);
+        .sys-badge.active {
+            border-color: rgba(16, 185, 129, 0.4);
+            color: #34d399;
+            background: rgba(16, 185, 129, 0.1);
         }
 
-        .auth-card {
-            background: var(--card-bg);
-            border-radius: 16px;
-            padding: 20px 24px;
-            border: 1px solid var(--border-color);
-            margin-bottom: 24px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 16px;
-            align-items: flex-end;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-        }
-        .auth-title {
-            width: 100%;
-            font-size: 15px;
-            font-weight: 700;
-            margin: 0;
-            color: var(--accent-blue);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
-            gap: 24px;
-        }
-        .card {
-            background: var(--card-bg);
-            border-radius: 16px;
-            padding: 24px;
-            border: 1px solid var(--border-color);
-            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-            transition: border-color 0.2s;
-        }
-        .card:hover {
-            border-color: #475569;
-        }
-        .card-header {
+        /* Панель вкладок аккаунтов */
+        .tabs-wrapper {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 12px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
         }
-        
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 48px;
-            height: 26px;
-            flex-shrink: 0;
+        .account-tabs {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            overflow-x: auto;
+            padding-bottom: 4px;
+            scrollbar-width: thin;
         }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider {
-            position: absolute;
+        .tab-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 18px;
+            background: var(--card-bg-subtle);
+            color: var(--text-muted);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
             cursor: pointer;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background-color: #475569;
-            transition: .25s ease-in-out;
-            border-radius: 26px;
+            transition: all 0.2s ease;
+            white-space: nowrap;
         }
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 20px;
-            width: 20px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .25s ease-in-out;
+        .tab-btn:hover {
+            background: var(--card-bg);
+            color: var(--text-main);
+            border-color: #475569;
+        }
+        .tab-btn.active {
+            background: #1e293b;
+            color: #38bdf8;
+            border-color: #38bdf8;
+            box-shadow: 0 4px 14px rgba(56, 189, 248, 0.15);
+        }
+        .tab-badge {
+            background: rgba(255, 255, 255, 0.08);
+            padding: 2px 8px;
+            border-radius: 9999px;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .tab-btn.active .tab-badge {
+            background: rgba(56, 189, 248, 0.2);
+            color: #38bdf8;
+        }
+        .tab-dot {
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
+            background: #64748b;
         }
-        input:checked + .slider { background-color: var(--accent-green); }
-        input:checked + .slider:before { transform: translateX(22px); }
+        .tab-dot.online { background: #10b981; }
 
-        .field-group {
+        .btn-add-account {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            background: rgba(56, 189, 248, 0.12);
+            color: #38bdf8;
+            border: 1px dashed rgba(56, 189, 248, 0.4);
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .btn-add-account:hover {
+            background: rgba(56, 189, 248, 0.2);
+            border-color: #38bdf8;
+            transform: translateY(-1px);
+        }
+
+        /* Карточка профиля */
+        .profile-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 28px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+        .profile-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .profile-title-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex: 1;
+            min-width: 280px;
+        }
+        .profile-title-input {
+            background: var(--card-bg-subtle);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px 14px;
+            color: var(--text-main);
+            font-size: 18px;
+            font-weight: 700;
+            width: 100%;
+            max-width: 380px;
+        }
+        .profile-title-input:focus {
+            border-color: var(--border-color-focus);
+            outline: none;
+        }
+        .profile-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        /* Grid формы профиля */
+        .profile-form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 18px;
+            margin-bottom: 20px;
+        }
+        .form-group {
             display: flex;
             flex-direction: column;
             gap: 6px;
-            flex: 1;
-            min-width: 200px;
         }
-        .field-label {
-            font-size: 12px;
+        .form-label {
+            font-size: 13px;
             font-weight: 600;
             color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            display: flex;
+            justify-content: space-between;
         }
-        .input-text {
-            width: 100%;
-            background: #0f172a;
+        .form-input {
+            background: var(--card-bg-subtle);
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            padding: 10px 12px;
+            padding: 10px 14px;
             color: var(--text-main);
-            font-size: 13.5px;
-            font-family: inherit;
+            font-size: 14px;
             transition: border-color 0.2s;
         }
-        .input-text:focus {
-            outline: none;
+        .form-input:focus {
             border-color: var(--border-color-focus);
+            outline: none;
         }
-        .input-text.dirty {
-            border-color: var(--accent-amber);
-            box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.2);
+        .pass-wrapper {
+            position: relative;
+            display: flex;
+        }
+        .pass-wrapper .form-input {
+            width: 100%;
+            padding-right: 44px;
+        }
+        .pass-toggle {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 44px;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .pass-toggle:hover { color: var(--text-main); }
+
+        /* Переключатель Toggle Switch */
+        .switch-container {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .switch-input { display: none; }
+        .switch-track {
+            width: 44px;
+            height: 24px;
+            background: #334155;
+            border-radius: 9999px;
+            position: relative;
+            transition: background-color 0.2s;
+        }
+        .switch-thumb {
+            width: 18px;
+            height: 18px;
+            background: #ffffff;
+            border-radius: 50%;
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            transition: transform 0.2s;
+        }
+        .switch-input:checked + .switch-track {
+            background: var(--accent-green);
+        }
+        .switch-input:checked + .switch-track .switch-thumb {
+            transform: translateX(20px);
+        }
+        .switch-label {
+            font-size: 13px;
+            font-weight: 600;
         }
 
+        /* Кнопки */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: var(--accent-blue);
+            color: #0b1120;
+        }
+        .btn-primary:hover { background: var(--accent-blue-hover); transform: translateY(-1px); }
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.25);
+            border-color: #ef4444;
+        }
+        .btn-secondary {
+            background: var(--card-bg-subtle);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+        }
+        .btn-secondary:hover { background: var(--card-bg-elevated); }
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+            border-radius: 6px;
+        }
+
+        /* Аккордеон сессии */
+        .accordion {
+            margin-top: 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            background: var(--card-bg-subtle);
+        }
+        .accordion-header {
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+        .accordion-header:hover { color: var(--text-main); }
+        .accordion-content {
+            padding: 16px;
+            border-top: 1px solid var(--border-color);
+            display: none;
+        }
+        .accordion-content.open { display: block; }
+        .session-textarea {
+            width: 100%;
+            height: 90px;
+            background: #0f172a;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 10px;
+            color: #cbd5e1;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            resize: vertical;
+            margin-bottom: 10px;
+        }
+
+        /* Секция Резюме */
+        .resumes-section {
+            margin-top: 32px;
+        }
+        .resumes-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .resumes-title {
+            font-size: 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 0;
+        }
+        .resumes-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+            gap: 20px;
+        }
+        @media (max-width: 640px) {
+            .resumes-grid { grid-template-columns: 1fr; }
+        }
+
+        .resume-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .resume-card:hover {
+            border-color: #475569;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+        }
+        .resume-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        .resume-info { flex: 1; }
+        .resume-name-input {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            color: var(--text-main);
+            font-size: 16px;
+            font-weight: 700;
+            width: 100%;
+            padding: 4px 6px;
+            margin-left: -6px;
+        }
+        .resume-name-input:focus {
+            background: var(--card-bg-subtle);
+            border-color: var(--border-color-focus);
+            outline: none;
+        }
+        .resume-meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 4px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .resume-link {
+            color: var(--accent-blue);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .resume-link:hover { text-decoration: underline; }
+
+        /* Статус плашка */
         .status-badge {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            background: rgba(16, 185, 129, 0.15);
-            color: var(--accent-green);
             padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 12.5px;
+            border-radius: 8px;
+            font-size: 12px;
             font-weight: 600;
         }
-        .status-badge.disabled {
+        .status-success {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        .status-warning {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fbbf24;
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+        .status-error {
             background: rgba(239, 68, 68, 0.15);
-            color: var(--accent-red);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+        .status-running {
+            background: rgba(56, 189, 248, 0.15);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            animation: pulse 1.8s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
 
-        .btn-group {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        .btn {
-            padding: 10px 16px;
+        /* Расписание */
+        .schedule-box {
+            background: var(--card-bg-subtle);
+            border: 1px solid rgba(255, 255, 255, 0.05);
             border-radius: 10px;
-            font-size: 13.5px;
+            padding: 12px;
+        }
+        .schedule-title {
+            font-size: 12px;
             font-weight: 600;
-            border: none;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .schedule-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .time-chip {
+            background: #1e293b;
+            border: 1px solid var(--border-color);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .time-chip-del {
             cursor: pointer;
-            transition: all 0.2s;
+            color: var(--text-muted);
+            border: none;
+            background: transparent;
+            padding: 0;
+            font-size: 14px;
+            line-height: 1;
+        }
+        .time-chip-del:hover { color: #f87171; }
+        .schedule-add-row {
             display: flex;
             align-items: center;
-            justify-content: center;
             gap: 6px;
-            min-height: 40px;
         }
-        .btn-save { background: #334155; color: #ffffff; }
-        .btn-save:hover { background: #475569; }
-        .btn-trigger { background: var(--accent-blue); color: #090d16; font-weight: 700; flex: 1; }
-        .btn-trigger:hover { background: var(--accent-blue-hover); color: #ffffff; }
-        .btn-add { background: var(--accent-green); color: #ffffff; }
-        .btn-add:hover { background: var(--accent-green-hover); }
-        .btn-delete { background: rgba(239, 68, 68, 0.15); color: var(--accent-red); padding: 6px 12px; font-size: 12px; }
-        .btn-delete:hover { background: rgba(239, 68, 68, 0.35); }
-        .btn-toggle-log {
+        .time-input {
+            width: 80px;
+            background: #0f172a;
+            border: 1px solid var(--border-color);
+            color: var(--text-main);
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .presets-row {
+            display: flex;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .btn-preset {
             background: transparent;
             border: 1px solid var(--border-color);
             color: var(--text-muted);
-            border-radius: 6px;
-            padding: 4px 8px;
             font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 4px;
             cursor: pointer;
-            transition: all 0.2s;
         }
-        .btn-toggle-log:hover {
-            color: var(--text-main);
-            border-color: #64748b;
+        .btn-preset:hover {
+            color: var(--accent-blue);
+            border-color: var(--accent-blue);
         }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+        /* Действия с резюме */
+        .resume-actions-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: auto;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        /* Логи */
         .log-box {
-            background: #060911;
+            background: #0a0f1d;
             border: 1px solid var(--border-color);
-            border-radius: 10px;
+            border-radius: 8px;
             padding: 12px;
-            font-family: 'Consolas', 'Courier New', monospace;
-            font-size: 12px;
-            line-height: 1.5;
-            color: #38bdf8;
-            height: 160px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: #94a3b8;
+            max-height: 180px;
             overflow-y: auto;
             white-space: pre-wrap;
             word-break: break-all;
-            transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: none;
         }
-        .log-box.expanded {
-            height: 380px;
-        }
-        .log-box::-webkit-scrollbar { width: 6px; }
-        .log-box::-webkit-scrollbar-track { background: #0b0f19; }
-        .log-box::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
-        .log-box::-webkit-scrollbar-thumb:hover { background: #475569; }
+        .log-box.open { display: block; }
 
-        /* Toast notifications container */
-        #toast-container {
-            position: fixed;
-            top: 24px;
-            right: 24px;
-            z-index: 99999;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            max-width: 380px;
-            width: calc(100% - 48px);
-            pointer-events: none;
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 48px 24px;
+            background: var(--card-bg-subtle);
+            border: 1px dashed var(--border-color);
+            border-radius: 16px;
+            color: var(--text-muted);
         }
-        .toast {
-            pointer-events: auto;
-            background: rgba(30, 41, 59, 0.95);
-            backdrop-filter: blur(10px);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 14px 18px;
-            color: var(--text-main);
-            font-size: 13.5px;
-            font-weight: 500;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-            transition: opacity 0.3s, transform 0.3s;
-        }
-        .toast.hide {
-            opacity: 0;
-            transform: translateX(40px);
-        }
-        .toast-success { border-left: 4px solid var(--accent-green); }
-        .toast-error { border-left: 4px solid var(--accent-red); }
-        .toast-info { border-left: 4px solid var(--accent-blue); }
-
-        @keyframes slideInRight {
-            from { opacity: 0; transform: translateX(50px); }
-            to { opacity: 1; transform: translateX(0); }
-        }
+        .empty-icon { font-size: 40px; margin-bottom: 12px; }
 
         /* Modal Dialog */
         .modal-overlay {
             position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(11, 17, 32, 0.75);
-            backdrop-filter: blur(6px);
-            z-index: 99998;
-            display: flex;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            display: none;
             align-items: center;
             justify-content: center;
-            padding: 20px;
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.2s ease;
+            z-index: 1000;
         }
-        .modal-overlay.active {
-            opacity: 1;
-            pointer-events: auto;
-        }
+        .modal-overlay.open { display: flex; }
         .modal-card {
             background: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 16px;
             padding: 24px;
-            max-width: 460px;
-            width: 100%;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-            transform: scale(0.95);
-            transition: transform 0.2s ease;
+            max-width: 440px;
+            width: 90%;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
         }
-        .modal-overlay.active .modal-card {
-            transform: scale(1);
-        }
-        .modal-title { margin: 0; font-size: 17px; font-weight: 700; }
-        .modal-body { font-size: 14px; color: var(--text-muted); line-height: 1.5; margin: 0; }
-        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+        .modal-title { font-size: 18px; font-weight: 700; margin: 0 0 10px 0; }
+        .modal-desc { font-size: 14px; color: var(--text-muted); margin: 0 0 20px 0; line-height: 1.5; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
 
-        /* Empty state */
-        .empty-card {
-            grid-column: 1 / -1;
-            background: var(--card-bg-subtle);
-            border: 2px dashed var(--border-color);
-            border-radius: 16px;
-            padding: 48px 24px;
-            text-align: center;
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
             display: flex;
             flex-direction: column;
+            gap: 10px;
+            z-index: 2000;
+        }
+        .toast {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            padding: 12px 18px;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+            display: flex;
             align-items: center;
-            gap: 14px;
+            gap: 10px;
+            animation: slideIn 0.3s ease;
         }
-
-        /* Mobile adaptivity */
-        @media (max-width: 640px) {
-            body { padding: 18px 12px; }
-            .header { flex-direction: column; align-items: flex-start; gap: 14px; }
-            .auth-card { padding: 16px; }
-            .card { padding: 18px; }
-            .card-header { flex-wrap: wrap; }
-            .card-header input { width: 100% !important; margin-bottom: 8px; }
-            .btn-group { flex-direction: column; }
-            .btn { width: 100%; min-height: 44px; }
-            .btn-trigger { order: -1; }
+        .toast-success { border-color: rgba(16, 185, 129, 0.4); color: #34d399; }
+        .toast-error { border-color: rgba(239, 68, 68, 0.4); color: #f87171; }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <div class="header-title-box">
-                <h1>💼 HH Resume Auto-Update Control Center</h1>
-                <div style="font-size: 13px; color: var(--text-muted);">Интеллектуальный автоподъем резюме на HeadHunter (MSK)</div>
-                <div class="system-tags">
-                    <span id="tg-status-tag" class="tag-badge">🤖 Telegram: проверка...</span>
-                    <span id="session-status-tag" class="tag-badge">🔐 Сессия: проверка...</span>
+        <!-- Хедер -->
+        <header class="header">
+            <div class="header-title">
+                <h1>⚡ HH Resume Multi-Account</h1>
+            </div>
+            <div class="header-badges">
+                <div class="sys-badge" id="tg-badge">
+                    <span>📱 Telegram</span>
+                    <span id="tg-status-text">Проверка...</span>
+                </div>
+                <div class="sys-badge" id="cron-badge">
+                    <span>⏱️ Crontab</span>
+                    <span id="cron-status-text">Активен</span>
+                </div>
+                <div class="sys-badge">
+                    <span>🔒 Basic Auth</span>
+                    <span>Включен</span>
                 </div>
             </div>
-            <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                <button class="btn btn-add" onclick="addNewResume()">➕ Добавить резюме</button>
-                <button class="btn btn-save" onclick="manualRefresh()">🔄 Обновить статус</button>
+        </header>
+
+        <!-- Вкладки аккаунтов -->
+        <div class="tabs-wrapper">
+            <div class="account-tabs" id="account-tabs-list">
+                <!-- Рендерится динамически -->
             </div>
+            <button class="btn-add-account" onclick="promptCreateAccount()">
+                <span>➕ Новый профиль</span>
+            </button>
         </div>
 
-        <div class="auth-card">
-            <h3 class="auth-title">🔐 Авторизация аккаунта HH.ru</h3>
-            <div class="field-group">
-                <label class="field-label">Email аккаунта</label>
-                <input type="email" class="input-text" id="auth-email" placeholder="example@ya.ru" onchange="markDirty('auth-email')" onblur="handleBlurAuth('auth-email')">
+        <!-- Карточка активного профиля -->
+        <section class="profile-card" id="profile-container">
+            <div class="profile-header">
+                <div class="profile-title-group">
+                    <input type="text" id="cur-acc-name" class="profile-title-input" placeholder="Название профиля" onchange="markDirty()">
+                </div>
+                <div class="profile-actions">
+                    <label class="switch-container">
+                        <input type="checkbox" id="cur-acc-enabled" class="switch-input" onchange="markDirty()">
+                        <div class="switch-track"><div class="switch-thumb"></div></div>
+                        <span class="switch-label">Профиль включен</span>
+                    </label>
+                    <button class="btn btn-danger btn-sm" id="btn-delete-profile" onclick="confirmDeleteCurrentAccount()">
+                        🗑️ Удалить профиль
+                    </button>
+                </div>
             </div>
-            <div class="field-group">
-                <label class="field-label">Пароль аккаунта</label>
-                <input type="password" class="input-text" id="auth-password" placeholder="••••••••" onchange="markDirty('auth-password')" onblur="handleBlurAuth('auth-password')">
-            </div>
-            <button class="btn btn-save" onclick="saveAuth()">💾 Сохранить данные входа</button>
-        </div>
 
-        <div class="grid" id="resumes-container">
-            <!-- Dynamic Resume Cards / Empty State -->
-        </div>
+            <!-- Форма учетных данных HH.ru -->
+            <div class="profile-form-grid">
+                <div class="form-group">
+                    <label class="form-label">Email на HeadHunter</label>
+                    <input type="email" id="cur-acc-email" class="form-input" placeholder="user@domain.com" onchange="markDirty()">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">
+                        <span>Пароль на HeadHunter</span>
+                        <span id="cur-acc-pwd-badge" style="color: #10b981; font-size: 11px;"></span>
+                    </label>
+                    <div class="pass-wrapper">
+                        <input type="password" id="cur-acc-password" class="form-input" placeholder="Новый пароль (или сохраненный)" onchange="markDirty()">
+                        <button type="button" class="pass-toggle" onclick="togglePasswordVisibility()">👁️</button>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <button class="btn btn-primary" onclick="saveCurrentConfig()">
+                    💾 Сохранить изменения профиля
+                </button>
+            </div>
+
+            <!-- Блок ручной вставки куки для текущего аккаунта -->
+            <div class="accordion" id="session-accordion">
+                <div class="accordion-header" onclick="toggleAccordion('session-accordion')">
+                    <span>🔑 Ручное обновление сессии / Cookies для этого профиля</span>
+                    <span id="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 8px 0;">
+                        Вставьте токен <code>hhtoken</code> или полный JSON сессии (playwright storageState):
+                    </p>
+                    <textarea id="session-input" class="session-textarea" placeholder="Вставьте токен или JSON сессии..."></textarea>
+                    <button class="btn btn-secondary btn-sm" onclick="saveSessionForCurrentAccount()">
+                        📥 Сохранить сессию для этого профиля
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Секция Резюме текущего профиля -->
+        <section class="resumes-section">
+            <div class="resumes-header">
+                <h2 class="resumes-title" id="resumes-section-title">
+                    <span>📄 Резюме профиля</span>
+                </h2>
+                <button class="btn btn-primary btn-sm" onclick="addNewResume()">
+                    ➕ Добавить резюме
+                </button>
+            </div>
+
+            <div class="resumes-grid" id="resumes-grid">
+                <!-- Карточки резюме рендерятся динамически -->
+            </div>
+        </section>
     </div>
 
-    <!-- Toast Notifications Container -->
-    <div id="toast-container"></div>
-
-    <!-- Confirm Dialog Modal -->
-    <div id="confirm-modal" class="modal-overlay">
+    <!-- Модальное окно подтверждения -->
+    <div class="modal-overlay" id="confirm-modal">
         <div class="modal-card">
-            <h3 class="modal-title" id="confirm-modal-title">Подтверждение</h3>
-            <p class="modal-body" id="confirm-modal-text"></p>
+            <h3 class="modal-title" id="modal-title">Подтверждение</h3>
+            <p class="modal-desc" id="modal-desc">Вы действительно хотите выполнить это действие?</p>
             <div class="modal-actions">
-                <button class="btn btn-save" id="confirm-btn-cancel">Отмена</button>
-                <button class="btn btn-trigger" id="confirm-btn-ok">Подтвердить</button>
+                <button class="btn btn-secondary" onclick="closeModal()">Отмена</button>
+                <button class="btn btn-danger" id="modal-confirm-btn">Подтвердить</button>
             </div>
         </div>
     </div>
+
+    <!-- Тосты -->
+    <div class="toast-container" id="toast-container"></div>
 
     <script>
-        let currentFullConfig = { auth: {}, resumes: [], system: {} };
-        let loadedResumeIds = [];
-        let dirtyFields = {}; // { elementId: true }
-        let logExpandedState = {}; // { resumeId: bool }
+        let configState = { accounts: [], system: {} };
+        let activeAccountId = null;
+        let isDirty = false;
 
-        // --- Toast System ---
-        function showToast(message, type = 'info') {
+        function showToast(message, type = 'success') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
             toast.className = `toast toast-${type}`;
-            
-            let icon = 'ℹ️';
-            if (type === 'success') icon = '✅';
-            if (type === 'error') icon = '⚠️';
-            
-            toast.innerHTML = `<span style="font-size:16px;">${icon}</span><span>${message}</span>`;
+            toast.innerHTML = `<span>${type === 'success' ? '✅' : '❌'}</span><span>${message}</span>`;
             container.appendChild(toast);
-            
             setTimeout(() => {
-                toast.classList.add('hide');
-                setTimeout(() => toast.remove(), 320);
+                toast.style.opacity = '0';
+                toast.style.transition = 'opacity 0.3s';
+                setTimeout(() => toast.remove(), 300);
             }, 3500);
         }
 
-        // --- Modal Confirmation System ---
-        function showConfirm(title, message, okText = 'Подтвердить', cancelText = 'Отмена') {
-            return new Promise((resolve) => {
-                const modal = document.getElementById('confirm-modal');
-                document.getElementById('confirm-modal-title').textContent = title;
-                document.getElementById('confirm-modal-text').textContent = message;
-                
-                const btnOk = document.getElementById('confirm-btn-ok');
-                const btnCancel = document.getElementById('confirm-btn-cancel');
-                btnOk.textContent = okText;
-                btnCancel.textContent = cancelText;
-
-                const cleanup = () => {
-                    modal.classList.remove('active');
-                    btnOk.onclick = null;
-                    btnCancel.onclick = null;
-                };
-
-                btnOk.onclick = () => { cleanup(); resolve(true); };
-                btnCancel.onclick = () => { cleanup(); resolve(false); };
-                modal.classList.add('active');
-            });
+        function markDirty() {
+            isDirty = true;
         }
 
-        function markDirty(elId) {
-            const el = document.getElementById(elId);
-            if (el) {
-                el.classList.add('dirty');
-                dirtyFields[elId] = true;
-            }
+        function togglePasswordVisibility() {
+            const pwd = document.getElementById('cur-acc-password');
+            pwd.type = pwd.type === 'password' ? 'text' : 'password';
         }
 
-        function clearDirty(elId) {
-            const el = document.getElementById(elId);
-            if (el) {
-                el.classList.remove('dirty');
-                delete dirtyFields[elId];
-            }
+        function toggleAccordion(id) {
+            const acc = document.getElementById(id);
+            const content = acc.querySelector('.accordion-content');
+            content.classList.toggle('open');
+            const arrow = acc.querySelector('#accordion-arrow');
+            arrow.textContent = content.classList.contains('open') ? '▲' : '▼';
         }
 
-        function toggleLog(id) {
-            logExpandedState[id] = !logExpandedState[id];
-            const lb = document.getElementById('logbox-' + id);
-            const btn = document.getElementById('log-toggle-btn-' + id);
-            if (lb && btn) {
-                if (logExpandedState[id]) {
-                    lb.classList.add('expanded');
-                    btn.textContent = 'Свернуть ▲';
-                } else {
-                    lb.classList.remove('expanded');
-                    btn.textContent = 'Развернуть ▼';
-                }
-            }
+        function openModal({ title, desc, onConfirm, isDanger = true }) {
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-desc').textContent = desc;
+            const btn = document.getElementById('modal-confirm-btn');
+            btn.className = isDanger ? 'btn btn-danger' : 'btn btn-primary';
+            btn.onclick = () => {
+                closeModal();
+                onConfirm();
+            };
+            document.getElementById('confirm-modal').classList.add('open');
         }
 
-        async function handleBlurResume(id, fieldType) {
-            const elId = fieldType + '-' + id;
-            if (dirtyFields[elId]) {
-                const item = (currentFullConfig.resumes || []).find(r => r.id === id);
-                const fieldName = fieldType === 'name' ? 'название' : (fieldType === 'url' ? 'ссылку' : 'время');
-                const targetTitle = item ? (item.name || id) : id;
-                
-                const confirmed = await showConfirm(
-                    'Несохраненные изменения',
-                    `Вы изменили ${fieldName} для "${targetTitle}". Сохранить изменения?`,
-                    'Сохранить',
-                    'Отменить'
-                );
-
-                if (confirmed) {
-                    await saveResume(id);
-                } else {
-                    clearDirty(elId);
-                    await loadData();
-                }
-            }
-        }
-
-        async function handleBlurAuth(fieldId) {
-            if (dirtyFields[fieldId]) {
-                const confirmed = await showConfirm(
-                    'Сохранение авторизации',
-                    'Вы изменили учетные данные HH.ru. Сохранить изменения?',
-                    'Сохранить',
-                    'Отменить'
-                );
-
-                if (confirmed) {
-                    await saveAuth();
-                } else {
-                    clearDirty(fieldId);
-                    await loadData();
-                }
-            }
-        }
-
-        async function manualRefresh() {
-            await loadData();
-            showToast('Статус синхронизирован с сервером', 'info');
+        function closeModal() {
+            document.getElementById('confirm-modal').classList.remove('open');
         }
 
         async function loadData() {
+            // Если фокус в любом input/textarea, откладываем опрос, чтобы не сбить ввод
+            const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+            if (activeTag === 'input' || activeTag === 'textarea') {
+                return;
+            }
+
             try {
                 const res = await fetch('/api/config');
                 if (res.status === 401) {
                     location.reload();
                     return;
                 }
-                currentFullConfig = await res.json();
-                
-                // Header status tags
-                const tgTag = document.getElementById('tg-status-tag');
-                if (tgTag) {
-                    const tgOk = currentFullConfig.system?.telegram_enabled;
-                    tgTag.className = 'tag-badge ' + (tgOk ? 'active' : '');
-                    tgTag.textContent = tgOk ? `🤖 Telegram: активен (${currentFullConfig.system?.telegram_chat_id})` : '🤖 Telegram: не настроен';
+                const data = await res.json();
+                configState = data;
+
+                // Обновление бейджей системы
+                const tgBadge = document.getElementById('tg-badge');
+                const tgText = document.getElementById('tg-status-text');
+                if (data.system && data.system.telegram_enabled) {
+                    tgBadge.classList.add('active');
+                    tgText.textContent = `ID: ${data.system.telegram_chat_id}`;
+                } else {
+                    tgBadge.classList.remove('active');
+                    tgText.textContent = 'Отключен';
                 }
 
-                const sessTag = document.getElementById('session-status-tag');
-                if (sessTag) {
-                    const hasAuth = Boolean(currentFullConfig.auth?.email);
-                    sessTag.className = 'tag-badge ' + (hasAuth ? 'active' : '');
-                    sessTag.textContent = hasAuth ? '🔐 Учетная запись: задана' : '⚠️ Учетная запись: отсутствует';
+                // Гарантируем активный аккаунт
+                const accounts = configState.accounts || [];
+                if (!accounts.some(a => a.id === activeAccountId)) {
+                    activeAccountId = accounts.length > 0 ? accounts[0].id : null;
                 }
 
-                const emailInp = document.getElementById('auth-email');
-                if (emailInp && !dirtyFields['auth-email'] && document.activeElement !== emailInp) {
-                    emailInp.value = currentFullConfig.auth?.email || '';
-                }
-                const passInp = document.getElementById('auth-password');
-                if (passInp && !dirtyFields['auth-password'] && document.activeElement !== passInp) {
-                    passInp.value = currentFullConfig.auth?.password || '';
-                }
-
-                updateUI(currentFullConfig.resumes || []);
+                renderTabs();
+                renderCurrentAccount();
             } catch (err) {
-                console.error("Error loading config:", err);
+                console.error("Ошибка обновления данных:", err);
             }
         }
 
-        function updateUI(resumesList) {
-            const container = document.getElementById('resumes-container');
-            const currentIds = resumesList.map(r => r.id);
+        function renderTabs() {
+            const list = document.getElementById('account-tabs-list');
+            list.innerHTML = '';
+            const accounts = configState.accounts || [];
 
-            // Empty state check
-            if (!resumesList || resumesList.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-card">
-                        <div style="font-size:36px;">📭</div>
-                        <h3 style="margin:0; font-size:18px;">Список резюме пуст</h3>
-                        <div style="color:var(--text-muted); font-size:13.5px; max-width:360px;">
-                            Добавьте ссылку на ваше резюме на hh.ru и задайте интервал автоподъема.
-                        </div>
-                        <button class="btn btn-add" onclick="addNewResume()">➕ Добавить первое резюме</button>
+            accounts.forEach(acc => {
+                const btn = document.createElement('button');
+                btn.className = `tab-btn ${acc.id === activeAccountId ? 'active' : ''}`;
+                btn.onclick = () => switchAccount(acc.id);
+
+                const dot = document.createElement('span');
+                dot.className = `tab-dot ${acc.enabled ? 'online' : ''}`;
+                btn.appendChild(dot);
+
+                const title = document.createElement('span');
+                title.textContent = acc.name || 'Без названия';
+                btn.appendChild(title);
+
+                const countBadge = document.createElement('span');
+                countBadge.className = 'tab-badge';
+                countBadge.textContent = (acc.resumes || []).length;
+                btn.appendChild(countBadge);
+
+                list.appendChild(btn);
+            });
+        }
+
+        function switchAccount(accId) {
+            activeAccountId = accId;
+            renderTabs();
+            renderCurrentAccount();
+        }
+
+        function getCurrentAccount() {
+            return (configState.accounts || []).find(a => a.id === activeAccountId);
+        }
+
+        function renderCurrentAccount() {
+            const acc = getCurrentAccount();
+            if (!acc) return;
+
+            // Название и активность
+            document.getElementById('cur-acc-name').value = acc.name || '';
+            document.getElementById('cur-acc-enabled').checked = acc.enabled !== false;
+
+            // Учетные данные
+            const auth = acc.auth || {};
+            document.getElementById('cur-acc-email').value = auth.email || '';
+            const pwdInput = document.getElementById('cur-acc-password');
+            pwdInput.value = auth.password || '';
+
+            const pwdBadge = document.getElementById('cur-acc-pwd-badge');
+            if (auth.password_saved) {
+                pwdBadge.textContent = '✓ Пароль сохранен в системе';
+            } else {
+                pwdBadge.textContent = '';
+            }
+
+            // Блокировка удаления единственного аккаунта
+            const delBtn = document.getElementById('btn-delete-profile');
+            const totalAccs = (configState.accounts || []).length;
+            if (totalAccs <= 1) {
+                delBtn.disabled = true;
+                delBtn.style.opacity = '0.5';
+                delBtn.title = 'Нельзя удалить единственный профиль';
+            } else {
+                delBtn.disabled = false;
+                delBtn.style.opacity = '1';
+                delBtn.title = '';
+            }
+
+            // Рендер резюме
+            renderResumes(acc);
+        }
+
+        function renderResumes(acc) {
+            const grid = document.getElementById('resumes-grid');
+            grid.innerHTML = '';
+            const resumes = acc.resumes || [];
+            document.getElementById('resumes-section-title').innerHTML = `<span>📄 Резюме профиля (${resumes.length})</span>`;
+
+            if (resumes.length === 0) {
+                grid.innerHTML = `
+                    <div class="empty-state" style="grid-column: 1 / -1;">
+                        <div class="empty-icon">📂</div>
+                        <h3 style="margin: 0 0 8px 0; color: var(--text-main);">В этом профиле пока нет резюме</h3>
+                        <p style="margin: 0 0 16px 0; font-size: 13px;">Нажмите кнопку ниже, чтобы добавить ваше первое резюме для автоподъема.</p>
+                        <button class="btn btn-primary btn-sm" onclick="addNewResume()">➕ Добавить резюме</button>
                     </div>
                 `;
-                loadedResumeIds = [];
                 return;
             }
 
-            if (JSON.stringify(currentIds) !== JSON.stringify(loadedResumeIds)) {
-                container.innerHTML = '';
-                resumesList.forEach((item) => {
-                    const isExpanded = Boolean(logExpandedState[item.id]);
-                    const card = document.createElement('div');
-                    card.className = 'card';
-                    card.id = 'card-' + item.id;
-                    card.innerHTML = `
-                        <div class="card-header">
-                            <input type="text" class="input-text" style="font-weight:700; font-size:15px; width:65%;" id="name-${item.id}" value="${item.name || ''}" placeholder="Название резюме" oninput="markDirty('name-${item.id}')" onblur="handleBlurResume('${item.id}', 'name')">
-                            <div style="display:flex; align-items:center; gap:12px;">
-                                <label class="switch" title="Включение/отключение расписания">
-                                    <input type="checkbox" id="enable-${item.id}" onchange="toggleEnable('${item.id}')">
-                                    <span class="slider"></span>
-                                </label>
-                                <button class="btn btn-delete" onclick="deleteResume('${item.id}')">🗑️ Удалить</button>
+            resumes.forEach((resume, idx) => {
+                const card = document.createElement('div');
+                card.className = 'resume-card';
+
+                // Определение статуса
+                let statusClass = 'status-warning';
+                let statusText = resume.last_result || 'Ожидание';
+                if (resume.is_running) {
+                    statusClass = 'status-running';
+                    statusText = '⏳ Выполняется...';
+                } else if (statusText.includes('УСПЕШНО')) {
+                    statusClass = 'status-success';
+                } else if (statusText.includes('Ошибка') || statusText.includes('Сбой')) {
+                    statusClass = 'status-error';
+                }
+
+                // Чипы расписания
+                const scheduleHtml = (resume.schedule || []).map(t => `
+                    <span class="time-chip">
+                        <span>${t}</span>
+                        <button class="time-chip-del" onclick="removeScheduleTime('${resume.id}', '${t}')">×</button>
+                    </span>
+                `).join('');
+
+                card.innerHTML = `
+                    <div class="resume-top">
+                        <div class="resume-info">
+                            <input type="text" class="resume-name-input" value="${resume.name || 'Резюме'}" onchange="updateResumeName('${resume.id}', this.value)">
+                            <div class="resume-meta">
+                                <span>ID: <code>${resume.id}</code></span>
+                                <span>•</span>
+                                <a href="${resume.url || '#'}" target="_blank" rel="noopener" class="resume-link">Открыть на HH ↗</a>
                             </div>
                         </div>
+                        <label class="switch-container">
+                            <input type="checkbox" class="switch-input" ${resume.enabled !== false ? 'checked' : ''} onchange="toggleResumeEnabled('${resume.id}', this.checked)">
+                            <div class="switch-track"><div class="switch-thumb"></div></div>
+                        </label>
+                    </div>
 
-                        <div class="field-group">
-                            <label class="field-label">Ссылка на резюме (HH URL)</label>
-                            <input type="text" class="input-text" id="url-${item.id}" placeholder="https://hh.ru/resume/..." oninput="markDirty('url-${item.id}')" onblur="handleBlurResume('${item.id}', 'url')">
-                        </div>
+                    <!-- URL input -->
+                    <div class="form-group">
+                        <label class="form-label" style="font-size: 11px;">Ссылка на резюме (URL)</label>
+                        <input type="text" class="form-input" style="font-size: 12px; padding: 6px 10px;" value="${resume.url || ''}" onchange="updateResumeUrl('${resume.id}', this.value)">
+                    </div>
 
-                        <div class="field-group">
-                            <label class="field-label">Время автоподъема (ЧЧ:ММ MSK через запятую)</label>
-                            <input type="text" class="input-text" id="sched-${item.id}" placeholder="07:00, 11:01, 15:02, 19:03, 23:04" oninput="markDirty('sched-${item.id}')" onblur="handleBlurResume('${item.id}', 'sched')">
-                        </div>
+                    <!-- Статус -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
+                        <span class="status-badge ${statusClass}">${statusText}</span>
+                        <span style="color: var(--text-muted);">${resume.last_time ? resume.last_time : 'Никогда'}</span>
+                    </div>
 
-                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                            <span class="status-badge" id="badge-${item.id}"></span>
-                            <div style="font-size:12px; color:var(--text-muted);" id="statustext-${item.id}"></div>
+                    <!-- Расписание -->
+                    <div class="schedule-box">
+                        <div class="schedule-title">
+                            <span>Расписание автоподъема</span>
                         </div>
+                        <div class="schedule-chips">
+                            ${scheduleHtml || '<span style="font-size: 11px; color: var(--text-muted);">Расписание не задано</span>'}
+                        </div>
+                        <div class="schedule-add-row">
+                            <input type="time" class="time-input" id="time-input-${resume.id}">
+                            <button class="btn btn-secondary btn-sm" onclick="addScheduleTime('${resume.id}')">➕</button>
+                        </div>
+                        <div class="presets-row">
+                            <button class="btn-preset" onclick="setSchedulePreset('${resume.id}', 4)">Каждые 4ч</button>
+                            <button class="btn-preset" onclick="setSchedulePreset('${resume.id}', 6)">Каждые 6ч</button>
+                            <button class="btn-preset" onclick="setSchedulePreset('${resume.id}', 8)">Каждые 8ч</button>
+                        </div>
+                    </div>
 
-                        <div class="btn-group">
-                            <button class="btn btn-save" onclick="saveResume('${item.id}')">💾 Сохранить</button>
-                            <button class="btn btn-trigger" id="btn-trig-${item.id}" onclick="triggerResume('${item.id}')"></button>
+                    <!-- Действия и логи -->
+                    <div class="resume-actions-row">
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-primary btn-sm" onclick="triggerUpdate('${resume.id}')" ${resume.is_running ? 'disabled' : ''}>
+                                ${resume.is_running ? '⏳ Запуск...' : '⚡ Поднять сейчас'}
+                            </button>
+                            <button class="btn btn-secondary btn-sm" onclick="toggleLog('log-${resume.id}')">
+                                📋 Логи
+                            </button>
                         </div>
+                        <button class="btn btn-danger btn-sm" onclick="confirmDeleteResume('${resume.id}')">
+                            🗑️
+                        </button>
+                    </div>
 
-                        <div class="field-group">
-                            <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <label class="field-label" style="margin:0;">📜 Лог выполнения</label>
-                                <button type="button" class="btn-toggle-log" id="log-toggle-btn-${item.id}" onclick="toggleLog('${item.id}')">${isExpanded ? 'Свернуть ▲' : 'Развернуть ▼'}</button>
-                            </div>
-                            <div class="log-box ${isExpanded ? 'expanded' : ''}" id="logbox-${item.id}"></div>
-                        </div>
-                    `;
-                    container.appendChild(card);
-                });
-                loadedResumeIds = currentIds;
+                    <div class="log-box" id="log-${resume.id}">${resume.log ? escapeHtml(resume.log) : 'Логи пока пусты.'}</div>
+                `;
+
+                grid.appendChild(card);
+            });
+        }
+
+        function escapeHtml(text) {
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        function toggleLog(id) {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('open');
+        }
+
+        function promptCreateAccount() {
+            const accName = prompt("Введите название нового профиля HH.ru:", `Профиль ${(configState.accounts || []).length + 1}`);
+            if (!accName || !accName.trim()) return;
+
+            const newId = `acc_${Date.now()}`;
+            const newAcc = {
+                id: newId,
+                name: accName.trim(),
+                auth: { email: "", password: "" },
+                enabled: true,
+                resumes: []
+            };
+
+            if (!configState.accounts) configState.accounts = [];
+            configState.accounts.push(newAcc);
+            activeAccountId = newId;
+
+            saveCurrentConfig();
+        }
+
+        function confirmDeleteCurrentAccount() {
+            const acc = getCurrentAccount();
+            if (!acc) return;
+
+            if ((configState.accounts || []).length <= 1) {
+                showToast("Нельзя удалить единственный профиль!", "error");
+                return;
             }
 
-            resumesList.forEach((item) => {
-                const isEnabled = item.enabled;
-                const isRunning = item.is_running;
-                const schedStr = (item.schedule || []).join(', ');
-
-                const nameInput = document.getElementById('name-' + item.id);
-                if (nameInput && !dirtyFields['name-' + item.id] && document.activeElement !== nameInput) {
-                    nameInput.value = item.name || '';
-                }
-
-                const enableInput = document.getElementById('enable-' + item.id);
-                if (enableInput) enableInput.checked = isEnabled;
-
-                const urlInput = document.getElementById('url-' + item.id);
-                if (urlInput && !dirtyFields['url-' + item.id] && document.activeElement !== urlInput) {
-                    urlInput.value = item.url || '';
-                }
-
-                const schedInput = document.getElementById('sched-' + item.id);
-                if (schedInput && !dirtyFields['sched-' + item.id] && document.activeElement !== schedInput) {
-                    schedInput.value = schedStr;
-                }
-
-                const badge = document.getElementById('badge-' + item.id);
-                if (badge) {
-                    badge.className = 'status-badge ' + (isEnabled ? '' : 'disabled');
-                    badge.textContent = isEnabled ? '🟢 Автоподъем активен' : '🔴 Автоподъем выключен';
-                }
-
-                const statustext = document.getElementById('statustext-' + item.id);
-                if (statustext) {
-                    statustext.innerHTML = `Статус: <b>${item.last_result || '-'}</b> (${item.last_time || '-'})`;
-                }
-
-                const btn = document.getElementById('btn-trig-' + item.id);
-                if (btn) {
-                    btn.disabled = isRunning;
-                    btn.textContent = isRunning ? '⏳ Поднятие...' : '🚀 Поднять сейчас';
-                }
-
-                const lb = document.getElementById('logbox-' + item.id);
-                if (lb) {
-                    const newLog = item.log || 'Лог пуст';
-                    if (lb.textContent !== newLog) {
-                        const isNearBottom = (lb.scrollHeight - lb.scrollTop - lb.clientHeight) < 80;
-                        lb.textContent = newLog;
-                        if (isNearBottom || lb.scrollTop === 0) {
-                            lb.scrollTop = lb.scrollHeight;
-                        }
-                    }
+            openModal({
+                title: "Удалить профиль?",
+                desc: `Вы уверены, что хотите удалить профиль "${acc.name}" и все связанные резюме (${(acc.resumes || []).length} шт.)?`,
+                onConfirm: () => {
+                    configState.accounts = configState.accounts.filter(a => a.id !== acc.id);
+                    activeAccountId = configState.accounts[0].id;
+                    saveCurrentConfig();
                 }
             });
         }
 
-        async function saveAuth() {
-            const email = document.getElementById('auth-email').value.trim();
-            const password = document.getElementById('auth-password').value.trim();
-            if (!email) {
-                showToast('Пожалуйста, укажите Email аккаунта', 'error');
-                return;
-            }
-            currentFullConfig.auth = { email, password };
-            clearDirty('auth-email');
-            clearDirty('auth-password');
-            await saveConfigToServer();
-            showToast('Учетные данные HH.ru сохранены!', 'success');
-        }
+        function addNewResume() {
+            const acc = getCurrentAccount();
+            if (!acc) return;
 
-        async function addNewResume() {
-            const newId = 'resume_' + Date.now();
-            const count = (currentFullConfig.resumes || []).length + 1;
+            const resumeName = prompt("Введите название нового резюме:", "Новое резюме");
+            if (!resumeName || !resumeName.trim()) return;
+
+            const newId = `resume_${Date.now()}`;
             const newResume = {
                 id: newId,
-                name: 'Резюме ' + count,
-                url: '',
+                name: resumeName.trim(),
+                url: "https://hh.ru/resume/...",
                 enabled: true,
-                schedule: ['07:00', '11:01', '15:02', '19:03', '23:04'],
-                last_time: '-',
-                last_result: 'Новое резюме',
-                log_file: 'logs/' + newId + '.log'
+                schedule: ["08:00", "12:00", "16:00", "20:00"],
+                last_time: "-",
+                last_result: "Новое резюме"
             };
-            if (!currentFullConfig.resumes) currentFullConfig.resumes = [];
-            currentFullConfig.resumes.push(newResume);
-            await saveConfigToServer();
-            showToast('Новое резюме добавлено в список', 'info');
+
+            if (!acc.resumes) acc.resumes = [];
+            acc.resumes.push(newResume);
+            saveCurrentConfig();
         }
 
-        async function deleteResume(id) {
-            const item = (currentFullConfig.resumes || []).find(r => r.id === id);
-            const name = item ? item.name : id;
-            const confirmed = await showConfirm(
-                'Удаление резюме',
-                `Вы уверены, что хотите удалить "${name}"? Расписание автоподъема будет остановлено.`,
-                'Удалить',
-                'Отмена'
-            );
-            if (confirmed) {
-                currentFullConfig.resumes = currentFullConfig.resumes.filter(r => r.id !== id);
-                await saveConfigToServer();
-                showToast(`Резюме "${name}" удалено`, 'info');
-            }
-        }
+        function confirmDeleteResume(resumeId) {
+            const acc = getCurrentAccount();
+            if (!acc) return;
 
-        async function toggleEnable(id) {
-            const item = (currentFullConfig.resumes || []).find(r => r.id === id);
-            if (item) {
-                item.enabled = document.getElementById('enable-' + id).checked;
-                await saveConfigToServer();
-                showToast(`Автоподъем ${item.enabled ? 'включен' : 'приостановлен'}`, 'info');
-            }
-        }
-
-        async function saveResume(id) {
-            const item = (currentFullConfig.resumes || []).find(r => r.id === id);
-            if (item) {
-                const nameInp = document.getElementById('name-' + id);
-                const urlInp = document.getElementById('url-' + id);
-                const schedInp = document.getElementById('sched-' + id);
-
-                if (nameInp) item.name = nameInp.value.trim();
-                if (urlInp) item.url = urlInp.value.trim();
-                if (schedInp) {
-                    const rawSched = schedInp.value.trim();
-                    item.schedule = rawSched.split(',').map(s => s.trim()).filter(s => s.length > 0);
+            openModal({
+                title: "Удалить резюме?",
+                desc: `Удалить резюме ID: ${resumeId} из текущего профиля?`,
+                onConfirm: () => {
+                    acc.resumes = acc.resumes.filter(r => r.id !== resumeId);
+                    saveCurrentConfig();
                 }
+            });
+        }
 
-                clearDirty('name-' + id);
-                clearDirty('url-' + id);
-                clearDirty('sched-' + id);
-
-                await saveConfigToServer();
-                showToast(`Настройки "${item.name}" сохранены!`, 'success');
+        function updateResumeName(resumeId, newName) {
+            const acc = getCurrentAccount();
+            if (!acc) return;
+            const r = acc.resumes.find(x => x.id === resumeId);
+            if (r) {
+                r.name = newName.trim();
+                saveCurrentConfig();
             }
         }
 
-        async function saveConfigToServer() {
+        function updateResumeUrl(resumeId, newUrl) {
+            const acc = getCurrentAccount();
+            if (!acc) return;
+            const r = acc.resumes.find(x => x.id === resumeId);
+            if (r) {
+                r.url = newUrl.trim();
+                saveCurrentConfig();
+            }
+        }
+
+        function toggleResumeEnabled(resumeId, enabled) {
+            const acc = getCurrentAccount();
+            if (!acc) return;
+            const r = acc.resumes.find(x => x.id === resumeId);
+            if (r) {
+                r.enabled = enabled;
+                saveCurrentConfig();
+            }
+        }
+
+        function addScheduleTime(resumeId) {
+            const input = document.getElementById(`time-input-${resumeId}`);
+            if (!input || !input.value) return;
+
+            const time = input.value.trim();
+            const acc = getCurrentAccount();
+            if (!acc) return;
+            const r = acc.resumes.find(x => x.id === resumeId);
+            if (r) {
+                if (!r.schedule) r.schedule = [];
+                if (!r.schedule.includes(time)) {
+                    r.schedule.push(time);
+                    r.schedule.sort();
+                    saveCurrentConfig();
+                }
+            }
+        }
+
+        function removeScheduleTime(resumeId, time) {
+            const acc = getCurrentAccount();
+            if (!acc) return;
+            const r = acc.resumes.find(x => x.id === resumeId);
+            if (r && r.schedule) {
+                r.schedule = r.schedule.filter(t => t !== time);
+                saveCurrentConfig();
+            }
+        }
+
+        function setSchedulePreset(resumeId, stepHours) {
+            const acc = getCurrentAccount();
+            if (!acc) return;
+            const r = acc.resumes.find(x => x.id === resumeId);
+            if (r) {
+                const times = [];
+                for (let h = 7; h < 24; h += stepHours) {
+                    times.push(`${String(h).padStart(2, '0')}:10`);
+                }
+                r.schedule = times;
+                saveCurrentConfig();
+            }
+        }
+
+        async function saveCurrentConfig() {
+            const acc = getCurrentAccount();
+            if (acc) {
+                acc.name = document.getElementById('cur-acc-name').value.trim() || acc.name;
+                acc.enabled = document.getElementById('cur-acc-enabled').checked;
+                if (!acc.auth) acc.auth = {};
+                acc.auth.email = document.getElementById('cur-acc-email').value.trim();
+                const pwdVal = document.getElementById('cur-acc-password').value.trim();
+                if (pwdVal && pwdVal !== '••••••••' && pwdVal !== '********') {
+                    acc.auth.password = pwdVal;
+                }
+            }
+
             try {
-                await fetch('/api/config', {
+                const res = await fetch('/api/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(currentFullConfig)
+                    body: JSON.stringify(configState)
                 });
-                await loadData();
+                const result = await res.json();
+                if (result.success) {
+                    showToast('Конфигурация успешно сохранена!');
+                    isDirty = false;
+                    loadData();
+                } else {
+                    showToast('Ошибка сохранения конфигурации', 'error');
+                }
             } catch (err) {
-                showToast('Ошибка при сохранении на сервер', 'error');
+                showToast('Ошибка сети при сохранении', 'error');
             }
         }
 
-        async function triggerResume(id) {
-            const btn = document.getElementById('btn-trig-' + id);
-            if (btn) {
-                btn.disabled = true;
-                btn.textContent = '⏳ Запуск...';
+        async function saveSessionForCurrentAccount() {
+            const acc = getCurrentAccount();
+            if (!acc) return;
+
+            const text = document.getElementById('session-input').value.trim();
+            if (!text) {
+                showToast('Введите данные сессии или токен', 'error');
+                return;
             }
 
+            try {
+                const res = await fetch('/api/session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_id: acc.id, session: text })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    showToast(`Сессия для профиля "${acc.name}" сохранена!`);
+                    document.getElementById('session-input').value = '';
+                } else {
+                    showToast(result.message || 'Ошибка сохранения сессии', 'error');
+                }
+            } catch (err) {
+                showToast('Ошибка сети при отправке сессии', 'error');
+            }
+        }
+
+        async function triggerUpdate(resumeId) {
             try {
                 const res = await fetch('/api/trigger', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ resume_id: id })
+                    body: JSON.stringify({ resume_id: resumeId })
                 });
-                const data = await res.json();
-                if (!data.success) {
-                    showToast(data.message || 'Ошибка запуска автоподъема', 'error');
+                const result = await res.json();
+                if (result.success) {
+                    showToast('Автоподъем резюме запущен!');
+                    setTimeout(loadData, 1000);
                 } else {
-                    showToast('Процесс автоподъема запущен!', 'info');
+                    showToast(result.message || 'Не удалось запустить', 'error');
                 }
-                setTimeout(loadData, 1000);
             } catch (err) {
                 showToast('Ошибка сети при запуске автоподъема', 'error');
             }
@@ -1114,10 +1671,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/session":
+            account_id = body.get("account_id", "acc_default")
+            if not is_valid_id(account_id):
+                account_id = "acc_default"
+
             session_data = body.get("session")
             if session_data:
                 try:
-                    session_file = os.path.join(BASE_DIR, "hh_session.json")
+                    session_file = os.path.join(BASE_DIR, f"hh_session_{account_id}.json")
                     if isinstance(session_data, str):
                         try:
                             parsed = json.loads(session_data)
@@ -1137,7 +1698,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
                     with open(session_file, "w", encoding="utf-8") as f:
                         json.dump(session_data, f, ensure_ascii=False, indent=2)
-                    res = json.dumps({"success": True, "message": "Сессия HH.ru успешно сохранена!"}).encode("utf-8")
+                    res = json.dumps({"success": True, "message": f"Сессия аккаунта {account_id} успешно сохранена!"}).encode("utf-8")
                 except Exception as e:
                     res = json.dumps({"success": False, "message": f"Ошибка сохранения: {e}"}).encode("utf-8")
             else:
@@ -1153,7 +1714,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/api/trigger":
             resume_id = body.get("resume_id", "resume1")
-            if not is_valid_resume_id(resume_id):
+            if not is_valid_id(resume_id):
                 res = json.dumps({"success": False, "message": "Некорректный ID резюме"}).encode("utf-8")
             elif resume_id in running_jobs:
                 res = json.dumps({"success": False, "message": "Автоподъем уже выполняется"}).encode("utf-8")
@@ -1191,35 +1752,44 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/api/config":
             cfg_data = load_resumes_config()
             cron_log_path = os.path.join(LOGS_DIR, "cron_log.log")
-            resumes = cfg_data.get("resumes", [])
             
-            for item in resumes:
-                resume_id = item.get("id")
-                log_file = os.path.join(LOGS_DIR, f"{resume_id}.log")
-                log_content = ""
-                
-                if os.path.exists(log_file):
-                    try:
-                        with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
-                            lines = f.readlines()
-                            log_content = "".join(lines[-150:])
-                    except Exception:
-                        pass
+            # Обход всех аккаунтов и их резюме
+            for acc in cfg_data.get("accounts", []):
+                # Маскирование пароля
+                auth_data = acc.get("auth", {})
+                real_pwd = auth_data.get("password", "")
+                if real_pwd:
+                    auth_data["password"] = "••••••••"
+                    auth_data["password_saved"] = True
+                else:
+                    auth_data["password"] = ""
+                    auth_data["password_saved"] = False
 
-                if resume_id == "resume1" and len(log_content.strip()) < 50 and os.path.exists(cron_log_path):
-                    try:
-                        with open(cron_log_path, "r", encoding="utf-8", errors="ignore") as f:
-                            lines = f.readlines()
-                            log_content = "".join(lines[-150:])
-                    except Exception:
-                        pass
+                for item in acc.get("resumes", []):
+                    resume_id = item.get("id")
+                    log_file = os.path.join(LOGS_DIR, f"{resume_id}.log")
+                    log_content = ""
+                    
+                    if os.path.exists(log_file):
+                        try:
+                            with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                                lines = f.readlines()
+                                log_content = "".join(lines[-150:])
+                        except Exception:
+                            pass
 
-                item["log"] = log_content
-                item["is_running"] = resume_id in running_jobs
+                    if resume_id == "resume1" and len(log_content.strip()) < 50 and os.path.exists(cron_log_path):
+                        try:
+                            with open(cron_log_path, "r", encoding="utf-8", errors="ignore") as f:
+                                lines = f.readlines()
+                                log_content = "".join(lines[-150:])
+                        except Exception:
+                            pass
 
-            cfg_data["resumes"] = resumes
+                    item["log"] = log_content
+                    item["is_running"] = resume_id in running_jobs
 
-            # System status metadata
+            # Метаданные системы
             tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
             cfg_data["system"] = {
@@ -1227,11 +1797,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 "telegram_chat_id": tg_chat or "",
                 "port": PORT
             }
-
-            # Mask real password for safety in UI
-            if cfg_data.get("auth", {}).get("password"):
-                cfg_data["auth"]["password"] = "••••••••"
-                cfg_data["auth"]["password_saved"] = True
 
             res = json.dumps(cfg_data).encode("utf-8")
             self.send_response(200)
@@ -1250,9 +1815,11 @@ class ThreadingTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-if __name__ == "__main__":
-    cfg_data = load_resumes_config()
-    sync_crontab_with_config(cfg_data)
-    with ThreadingTCPServer(("0.0.0.0", PORT), DashboardHandler) as httpd:
-        print(f"HH Multi-Resume Dashboard started on port {PORT}")
+def run_server():
+    server_address = ('0.0.0.0', PORT)
+    with ThreadingTCPServer(server_address, DashboardHandler) as httpd:
+        print(f"HH Multi-Account Dashboard running at http://0.0.0.0:{PORT}")
         httpd.serve_forever()
+
+if __name__ == "__main__":
+    run_server()
