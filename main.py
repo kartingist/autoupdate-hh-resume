@@ -37,6 +37,10 @@ def setup_logger(target_id=None):
         fh = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
         fh.setFormatter(formatter)
         logger.addHandler(fh)
+        try:
+            os.chmod(log_file, 0o666)
+        except Exception:
+            pass
 
 setup_logger()
 
@@ -235,8 +239,8 @@ class HHAutomation:
         # Индивидуальный файл сессии для каждого аккаунта
         self.auth_file = os.path.join(BASE_DIR, f"hh_session_{account_id}.json")
         
-        # Если файл сессии аккаунта еще не существует, проверяем старые сессионные файлы
-        if not os.path.exists(self.auth_file):
+        # Только для acc_default допускается разовый фолбэк на старый общий файл сессии
+        if account_id == "acc_default" and not os.path.exists(self.auth_file):
             candidates = [
                 os.path.join(BASE_DIR, "hh_session.json"),
                 os.path.join(BASE_DIR, f"hh_session_{target_id}.json") if target_id else None
@@ -577,7 +581,8 @@ def run_update_for_resume(target_id: str = None, max_retries: int = 3):
                 hh.launch_browser(headless=True)
 
                 first_url = items_to_process[0].get("url") or "https://hh.ru"
-                if not hh.is_logged_in(first_url):
+                has_session = os.path.exists(hh.auth_file)
+                if not has_session or not hh.is_logged_in(first_url):
                     hh.perform_login(account_name=acc_name)
 
                 for item in items_to_process:
