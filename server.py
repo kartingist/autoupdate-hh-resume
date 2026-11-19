@@ -43,7 +43,7 @@ DASHBOARD_PASS = os.environ.get("HH_DASHBOARD_PASS", "")
 
 def is_authenticated(headers) -> bool:
     if not DASHBOARD_USER or not DASHBOARD_PASS:
-        return True  # Auth is disabled if credentials not set
+        return True
     auth_header = headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Basic "):
         return False
@@ -66,7 +66,6 @@ def load_resumes_config():
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 
-                # Старый формат: список резюме
                 if isinstance(data, list):
                     data = {
                         "accounts": [
@@ -83,7 +82,6 @@ def load_resumes_config():
                         ]
                     }
 
-                # Старый формат: словарь с auth и resumes
                 elif isinstance(data, dict) and "accounts" not in data:
                     data = {
                         "accounts": [
@@ -100,7 +98,6 @@ def load_resumes_config():
                         ]
                     }
 
-                # Обеспечиваем наличие хотя бы одного профиля
                 accounts = data.get("accounts", [])
                 if not accounts:
                     data["accounts"] = [
@@ -116,7 +113,6 @@ def load_resumes_config():
                         }
                     ]
 
-                # Проверяем наличие сессионного файла для acc_default, если мигрировали
                 acc_default_session = os.path.join(BASE_DIR, "hh_session_acc_default.json")
                 if not os.path.exists(acc_default_session):
                     old_sess = os.path.join(BASE_DIR, "hh_session.json")
@@ -162,7 +158,6 @@ def save_resumes_config(cfg_data):
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                     disk_data = json.load(f)
                     
-                    # Приводим disk_data к accounts, если старый формат
                     if isinstance(disk_data, list):
                         disk_accounts = [{"id": "acc_default", "auth": {}, "resumes": disk_data}]
                     elif isinstance(disk_data, dict) and "accounts" not in disk_data:
@@ -174,12 +169,10 @@ def save_resumes_config(cfg_data):
 
                     disk_acc_map = {a.get("id"): a for a in disk_accounts if isinstance(a, dict) and "id" in a}
 
-                    # Проходим по всем пришедшим аккаунтам
                     for acc in cfg_data.get("accounts", []):
                         acc_id = acc.get("id")
                         disk_acc = disk_acc_map.get(acc_id)
                         if disk_acc:
-                            # 1. Защита пароля: если замаскирован или пустой - сохраняем пароль с диска
                             submitted_pwd = acc.get("auth", {}).get("password", "").strip()
                             disk_pwd = disk_acc.get("auth", {}).get("password", "")
                             if not submitted_pwd or submitted_pwd in ("••••••••", "********"):
@@ -187,7 +180,6 @@ def save_resumes_config(cfg_data):
                                     acc["auth"] = {}
                                 acc["auth"]["password"] = disk_pwd
 
-                            # 2. Слияние статусов резюме (last_time, last_result)
                             disk_resumes = {r["id"]: r for r in disk_acc.get("resumes", []) if isinstance(r, dict) and "id" in r}
                             for r in acc.get("resumes", []):
                                 r_id = r.get("id")
@@ -241,7 +233,6 @@ def sync_crontab_with_config(cfg_data):
                     except ValueError:
                         pass
 
-    # Чтение текущего crontab для сохранения строк, не относящихся к нашему автообновлению
     try:
         existing = subprocess.check_output(["crontab", "-l"], stderr=subprocess.DEVNULL).decode()
     except subprocess.CalledProcessError:
@@ -321,10 +312,10 @@ INDEX_HTML = """<!DOCTYPE html>
             background: var(--bg-color);
             color: var(--text-main);
             margin: 0;
-            padding: 30px 16px;
+            padding: 24px 16px;
             min-height: 100vh;
         }
-        .container { max-width: 1320px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
         
         *:focus-visible {
             outline: 2px solid var(--accent-blue);
@@ -338,8 +329,8 @@ INDEX_HTML = """<!DOCTYPE html>
             align-items: center;
             flex-wrap: wrap;
             gap: 16px;
-            margin-bottom: 24px;
-            padding-bottom: 20px;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
             border-bottom: 1px solid var(--border-color);
         }
         .header-title {
@@ -348,7 +339,7 @@ INDEX_HTML = """<!DOCTYPE html>
             gap: 12px;
         }
         .header-title h1 {
-            font-size: 24px;
+            font-size: 22px;
             font-weight: 800;
             margin: 0;
             letter-spacing: -0.02em;
@@ -366,7 +357,7 @@ INDEX_HTML = """<!DOCTYPE html>
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            padding: 6px 12px;
+            padding: 5px 12px;
             border-radius: 9999px;
             font-size: 12px;
             font-weight: 600;
@@ -386,7 +377,7 @@ INDEX_HTML = """<!DOCTYPE html>
             align-items: center;
             justify-content: space-between;
             gap: 12px;
-            margin-bottom: 24px;
+            margin-bottom: 18px;
             flex-wrap: wrap;
         }
         .account-tabs {
@@ -401,7 +392,7 @@ INDEX_HTML = """<!DOCTYPE html>
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            padding: 10px 18px;
+            padding: 9px 16px;
             background: var(--card-bg-subtle);
             color: var(--text-muted);
             border: 1px solid var(--border-color);
@@ -446,7 +437,7 @@ INDEX_HTML = """<!DOCTYPE html>
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            padding: 10px 16px;
+            padding: 9px 16px;
             background: rgba(56, 189, 248, 0.12);
             color: #38bdf8;
             border: 1px dashed rgba(56, 189, 248, 0.4);
@@ -459,7 +450,6 @@ INDEX_HTML = """<!DOCTYPE html>
         .btn-add-account:hover {
             background: rgba(56, 189, 248, 0.2);
             border-color: #38bdf8;
-            transform: translateY(-1px);
         }
 
         /* Карточка профиля */
@@ -467,37 +457,35 @@ INDEX_HTML = """<!DOCTYPE html>
             background: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 16px;
-            padding: 24px;
-            margin-bottom: 28px;
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+            padding: 18px 22px;
+            margin-bottom: 24px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+            transition: all 0.2s ease;
         }
         .profile-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             flex-wrap: wrap;
-            gap: 16px;
-            margin-bottom: 20px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            gap: 14px;
         }
         .profile-title-group {
             display: flex;
             align-items: center;
             gap: 12px;
             flex: 1;
-            min-width: 280px;
+            min-width: 260px;
         }
         .profile-title-input {
             background: var(--card-bg-subtle);
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            padding: 8px 14px;
+            padding: 7px 12px;
             color: var(--text-main);
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 700;
             width: 100%;
-            max-width: 380px;
+            max-width: 340px;
         }
         .profile-title-input:focus {
             border-color: var(--border-color-focus);
@@ -506,15 +494,34 @@ INDEX_HTML = """<!DOCTYPE html>
         .profile-actions {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
+            flex-wrap: wrap;
         }
 
-        /* Grid формы профиля */
+        /* Сворачиваемая секция настроек профиля */
+        .profile-settings-body {
+            overflow: hidden;
+            transition: max-height 0.35s ease, opacity 0.25s ease, margin-top 0.25s ease;
+            max-height: 1200px;
+            opacity: 1;
+            margin-top: 18px;
+            padding-top: 18px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .profile-settings-body.collapsed {
+            max-height: 0;
+            opacity: 0;
+            margin-top: 0;
+            padding-top: 0;
+            border-top: none;
+            pointer-events: none;
+        }
+
         .profile-form-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 18px;
-            margin-bottom: 20px;
+            gap: 16px;
+            margin-bottom: 16px;
         }
         .form-group {
             display: flex;
@@ -532,7 +539,7 @@ INDEX_HTML = """<!DOCTYPE html>
             background: var(--card-bg-subtle);
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            padding: 10px 14px;
+            padding: 9px 12px;
             color: var(--text-main);
             font-size: 14px;
             transition: border-color 0.2s;
@@ -569,22 +576,22 @@ INDEX_HTML = """<!DOCTYPE html>
         .switch-container {
             display: inline-flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
             cursor: pointer;
             user-select: none;
         }
         .switch-input { display: none; }
         .switch-track {
-            width: 44px;
-            height: 24px;
+            width: 40px;
+            height: 22px;
             background: #334155;
             border-radius: 9999px;
             position: relative;
             transition: background-color 0.2s;
         }
         .switch-thumb {
-            width: 18px;
-            height: 18px;
+            width: 16px;
+            height: 16px;
             background: #ffffff;
             border-radius: 50%;
             position: absolute;
@@ -596,7 +603,7 @@ INDEX_HTML = """<!DOCTYPE html>
             background: var(--accent-green);
         }
         .switch-input:checked + .switch-track .switch-thumb {
-            transform: translateX(20px);
+            transform: translateX(18px);
         }
         .switch-label {
             font-size: 13px;
@@ -609,9 +616,9 @@ INDEX_HTML = """<!DOCTYPE html>
             align-items: center;
             justify-content: center;
             gap: 8px;
-            padding: 10px 18px;
+            padding: 9px 16px;
             border-radius: 8px;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             cursor: pointer;
             border: none;
@@ -645,14 +652,14 @@ INDEX_HTML = """<!DOCTYPE html>
 
         /* Аккордеон сессии */
         .accordion {
-            margin-top: 14px;
+            margin-top: 12px;
             border: 1px solid var(--border-color);
             border-radius: 8px;
             overflow: hidden;
             background: var(--card-bg-subtle);
         }
         .accordion-header {
-            padding: 12px 16px;
+            padding: 10px 14px;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -663,14 +670,14 @@ INDEX_HTML = """<!DOCTYPE html>
         }
         .accordion-header:hover { color: var(--text-main); }
         .accordion-content {
-            padding: 16px;
+            padding: 14px;
             border-top: 1px solid var(--border-color);
             display: none;
         }
         .accordion-content.open { display: block; }
         .session-textarea {
             width: 100%;
-            height: 90px;
+            height: 80px;
             background: #0f172a;
             border: 1px solid var(--border-color);
             border-radius: 6px;
@@ -684,31 +691,50 @@ INDEX_HTML = """<!DOCTYPE html>
 
         /* Секция Резюме */
         .resumes-section {
-            margin-top: 32px;
+            margin-top: 24px;
         }
         .resumes-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
+            margin-bottom: 18px;
             flex-wrap: wrap;
             gap: 12px;
         }
         .resumes-title {
-            font-size: 20px;
+            font-size: 18px;
             font-weight: 700;
             display: flex;
             align-items: center;
             gap: 10px;
             margin: 0;
         }
+
+        /* Адаптивная сетка резюме (до 2х в ширину) */
         .resumes-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
             gap: 20px;
+            width: 100%;
         }
-        @media (max-width: 640px) {
-            .resumes-grid { grid-template-columns: 1fr; }
+
+        /* Режим 2+ резюме: ровно 2 колонки на экране > 880px, 1 колонка на смартфонах */
+        .resumes-grid.mode-multi {
+            grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+        }
+        @media (min-width: 960px) {
+            .resumes-grid.mode-multi {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+        @media (max-width: 768px) {
+            .resumes-grid.mode-multi {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Режим 1 резюме: карточка-сплит (параметры слева, логи справа) */
+        .resumes-grid.mode-single {
+            grid-template-columns: 1fr;
         }
 
         .resume-card {
@@ -718,13 +744,52 @@ INDEX_HTML = """<!DOCTYPE html>
             padding: 20px;
             display: flex;
             flex-direction: column;
-            gap: 16px;
+            gap: 14px;
             transition: border-color 0.2s, box-shadow 0.2s;
         }
         .resume-card:hover {
             border-color: #475569;
             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
         }
+
+        /* Сплит-карточка при 1 резюме */
+        .resume-card-single-split {
+            display: grid;
+            grid-template-columns: minmax(360px, 1fr) minmax(420px, 1.25fr);
+            gap: 24px;
+            align-items: stretch;
+        }
+        @media (max-width: 900px) {
+            .resume-card-single-split {
+                grid-template-columns: 1fr;
+            }
+        }
+        .resume-split-left {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        .resume-split-right {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            background: #070c18;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 14px;
+            min-height: 280px;
+        }
+        .single-log-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding-bottom: 8px;
+        }
+
         .resume-top {
             display: flex;
             justify-content: space-between;
@@ -770,7 +835,7 @@ INDEX_HTML = """<!DOCTYPE html>
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            padding: 6px 12px;
+            padding: 5px 12px;
             border-radius: 8px;
             font-size: 12px;
             font-weight: 600;
@@ -825,7 +890,7 @@ INDEX_HTML = """<!DOCTYPE html>
         .time-chip {
             background: #1e293b;
             border: 1px solid var(--border-color);
-            padding: 4px 10px;
+            padding: 3px 8px;
             border-radius: 6px;
             font-size: 12px;
             font-family: 'JetBrains Mono', monospace;
@@ -883,13 +948,13 @@ INDEX_HTML = """<!DOCTYPE html>
             justify-content: space-between;
             align-items: center;
             margin-top: auto;
-            padding-top: 12px;
+            padding-top: 10px;
             border-top: 1px solid rgba(255, 255, 255, 0.05);
         }
 
         /* Логи */
         .log-box {
-            background: #0a0f1d;
+            background: #070c18;
             border: 1px solid var(--border-color);
             border-radius: 8px;
             padding: 12px;
@@ -903,6 +968,15 @@ INDEX_HTML = """<!DOCTYPE html>
             display: none;
         }
         .log-box.open { display: block; }
+        .single-log-box {
+            display: block;
+            flex: 1;
+            max-height: none;
+            min-height: 240px;
+            border: none;
+            padding: 6px 0;
+            background: transparent;
+        }
 
         /* Empty state */
         .empty-state {
@@ -1014,52 +1088,57 @@ INDEX_HTML = """<!DOCTYPE html>
                     <label class="switch-container">
                         <input type="checkbox" id="cur-acc-enabled" class="switch-input" onchange="markDirty()">
                         <div class="switch-track"><div class="switch-thumb"></div></div>
-                        <span class="switch-label">Профиль включен</span>
+                        <span class="switch-label">Включен</span>
                     </label>
-                    <button class="btn btn-danger btn-sm" id="btn-delete-profile" onclick="confirmDeleteCurrentAccount()">
-                        🗑️ Удалить профиль
+                    <button class="btn btn-secondary btn-sm" id="btn-toggle-profile-settings" onclick="toggleProfileSettings()">
+                        <span id="profile-settings-btn-text">⚙️ Настройки профиля ▼</span>
+                    </button>
+                    <button class="btn btn-danger btn-sm" id="btn-delete-profile" onclick="confirmDeleteCurrentAccount()" title="Удалить профиль">
+                        🗑️
                     </button>
                 </div>
             </div>
 
-            <!-- Форма учетных данных HH.ru -->
-            <div class="profile-form-grid">
-                <div class="form-group">
-                    <label class="form-label">Email на HeadHunter</label>
-                    <input type="email" id="cur-acc-email" class="form-input" placeholder="user@domain.com" onchange="markDirty()">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">
-                        <span>Пароль на HeadHunter</span>
-                        <span id="cur-acc-pwd-badge" style="color: #10b981; font-size: 11px;"></span>
-                    </label>
-                    <div class="pass-wrapper">
-                        <input type="password" id="cur-acc-password" class="form-input" placeholder="Новый пароль (или сохраненный)" onchange="markDirty()">
-                        <button type="button" class="pass-toggle" onclick="togglePasswordVisibility()">👁️</button>
+            <!-- Сворачиваемое тело параметров профиля -->
+            <div class="profile-settings-body" id="profile-settings-body">
+                <div class="profile-form-grid">
+                    <div class="form-group">
+                        <label class="form-label">Email на HeadHunter</label>
+                        <input type="email" id="cur-acc-email" class="form-input" placeholder="user@domain.com" onchange="markDirty()">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">
+                            <span>Пароль на HeadHunter</span>
+                            <span id="cur-acc-pwd-badge" style="color: #10b981; font-size: 11px;"></span>
+                        </label>
+                        <div class="pass-wrapper">
+                            <input type="password" id="cur-acc-password" class="form-input" placeholder="Новый пароль (или сохраненный)" onchange="markDirty()">
+                            <button type="button" class="pass-toggle" onclick="togglePasswordVisibility()">👁️</button>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-                <button class="btn btn-primary" onclick="saveCurrentConfig()">
-                    💾 Сохранить изменения профиля
-                </button>
-            </div>
-
-            <!-- Блок ручной вставки куки для текущего аккаунта -->
-            <div class="accordion" id="session-accordion">
-                <div class="accordion-header" onclick="toggleAccordion('session-accordion')">
-                    <span>🔑 Ручное обновление сессии / Cookies для этого профиля</span>
-                    <span id="accordion-arrow">▼</span>
-                </div>
-                <div class="accordion-content">
-                    <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 8px 0;">
-                        Вставьте токен <code>hhtoken</code> или полный JSON сессии (playwright storageState):
-                    </p>
-                    <textarea id="session-input" class="session-textarea" placeholder="Вставьте токен или JSON сессии..."></textarea>
-                    <button class="btn btn-secondary btn-sm" onclick="saveSessionForCurrentAccount()">
-                        📥 Сохранить сессию для этого профиля
+                <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <button class="btn btn-primary" onclick="saveCurrentConfig()">
+                        💾 Сохранить настройки профиля
                     </button>
+                </div>
+
+                <!-- Блок ручной вставки куки для текущего аккаунта -->
+                <div class="accordion" id="session-accordion">
+                    <div class="accordion-header" onclick="toggleAccordion('session-accordion')">
+                        <span>🔑 Ручное обновление сессии / Cookies для этого профиля</span>
+                        <span id="accordion-arrow">▼</span>
+                    </div>
+                    <div class="accordion-content">
+                        <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 8px 0;">
+                            Вставьте токен <code>hhtoken</code> или полный JSON сессии (playwright storageState):
+                        </p>
+                        <textarea id="session-input" class="session-textarea" placeholder="Вставьте токен или JSON сессии..."></textarea>
+                        <button class="btn btn-secondary btn-sm" onclick="saveSessionForCurrentAccount()">
+                            📥 Сохранить сессию для этого профиля
+                        </button>
+                    </div>
                 </div>
             </div>
         </section>
@@ -1100,6 +1179,13 @@ INDEX_HTML = """<!DOCTYPE html>
         let configState = { accounts: [], system: {} };
         let activeAccountId = null;
         let isDirty = false;
+        
+        // Хранилище состояния раскрытых логов и позиции скролла
+        const openLogsMap = {};
+        const logScrollPosMap = {};
+
+        // Запоминание свернутости параметров профиля в localStorage
+        let profileSettingsCollapsed = localStorage.getItem('hh_profile_settings_collapsed') === 'true';
 
         function showToast(message, type = 'success') {
             const container = document.getElementById('toast-container');
@@ -1131,6 +1217,24 @@ INDEX_HTML = """<!DOCTYPE html>
             arrow.textContent = content.classList.contains('open') ? '▲' : '▼';
         }
 
+        function toggleProfileSettings() {
+            profileSettingsCollapsed = !profileSettingsCollapsed;
+            localStorage.setItem('hh_profile_settings_collapsed', profileSettingsCollapsed);
+            applyProfileSettingsVisibility();
+        }
+
+        function applyProfileSettingsVisibility() {
+            const body = document.getElementById('profile-settings-body');
+            const btnText = document.getElementById('profile-settings-btn-text');
+            if (profileSettingsCollapsed) {
+                body.classList.add('collapsed');
+                btnText.textContent = '⚙️ Настройки профиля ▼';
+            } else {
+                body.classList.remove('collapsed');
+                btnText.textContent = '⚙️ Свернуть настройки ▲';
+            }
+        }
+
         function openModal({ title, desc, onConfirm, isDanger = true }) {
             document.getElementById('modal-title').textContent = title;
             document.getElementById('modal-desc').textContent = desc;
@@ -1148,10 +1252,18 @@ INDEX_HTML = """<!DOCTYPE html>
         }
 
         async function loadData() {
-            // Если фокус в любом input/textarea, откладываем опрос, чтобы не сбить ввод
             const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
             if (activeTag === 'input' || activeTag === 'textarea') {
                 return;
+            }
+
+            // Запоминаем текущую позицию прокрутки логов перед перерисовкой
+            const currentAcc = getCurrentAccount();
+            if (currentAcc && currentAcc.resumes) {
+                currentAcc.resumes.forEach(r => {
+                    const el = document.getElementById(`log-${r.id}`);
+                    if (el) logScrollPosMap[r.id] = el.scrollTop;
+                });
             }
 
             try {
@@ -1163,7 +1275,6 @@ INDEX_HTML = """<!DOCTYPE html>
                 const data = await res.json();
                 configState = data;
 
-                // Обновление бейджей системы
                 const tgBadge = document.getElementById('tg-badge');
                 const tgText = document.getElementById('tg-status-text');
                 if (data.system && data.system.telegram_enabled) {
@@ -1174,7 +1285,6 @@ INDEX_HTML = """<!DOCTYPE html>
                     tgText.textContent = 'Отключен';
                 }
 
-                // Гарантируем активный аккаунт
                 const accounts = configState.accounts || [];
                 if (!accounts.some(a => a.id === activeAccountId)) {
                     activeAccountId = accounts.length > 0 ? accounts[0].id : null;
@@ -1182,6 +1292,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
                 renderTabs();
                 renderCurrentAccount();
+                applyProfileSettingsVisibility();
             } catch (err) {
                 console.error("Ошибка обновления данных:", err);
             }
@@ -1228,11 +1339,9 @@ INDEX_HTML = """<!DOCTYPE html>
             const acc = getCurrentAccount();
             if (!acc) return;
 
-            // Название и активность
             document.getElementById('cur-acc-name').value = acc.name || '';
             document.getElementById('cur-acc-enabled').checked = acc.enabled !== false;
 
-            // Учетные данные
             const auth = acc.auth || {};
             document.getElementById('cur-acc-email').value = auth.email || '';
             const pwdInput = document.getElementById('cur-acc-password');
@@ -1240,12 +1349,11 @@ INDEX_HTML = """<!DOCTYPE html>
 
             const pwdBadge = document.getElementById('cur-acc-pwd-badge');
             if (auth.password_saved) {
-                pwdBadge.textContent = '✓ Пароль сохранен в системе';
+                pwdBadge.textContent = '✓ Сохранен';
             } else {
                 pwdBadge.textContent = '';
             }
 
-            // Блокировка удаления единственного аккаунта
             const delBtn = document.getElementById('btn-delete-profile');
             const totalAccs = (configState.accounts || []).length;
             if (totalAccs <= 1) {
@@ -1255,10 +1363,9 @@ INDEX_HTML = """<!DOCTYPE html>
             } else {
                 delBtn.disabled = false;
                 delBtn.style.opacity = '1';
-                delBtn.title = '';
+                delBtn.title = 'Удалить профиль';
             }
 
-            // Рендер резюме
             renderResumes(acc);
         }
 
@@ -1269,22 +1376,25 @@ INDEX_HTML = """<!DOCTYPE html>
             document.getElementById('resumes-section-title').innerHTML = `<span>📄 Резюме профиля (${resumes.length})</span>`;
 
             if (resumes.length === 0) {
+                grid.className = 'resumes-grid';
                 grid.innerHTML = `
                     <div class="empty-state" style="grid-column: 1 / -1;">
                         <div class="empty-icon">📂</div>
                         <h3 style="margin: 0 0 8px 0; color: var(--text-main);">В этом профиле пока нет резюме</h3>
-                        <p style="margin: 0 0 16px 0; font-size: 13px;">Нажмите кнопку ниже, чтобы добавить ваше первое резюме для автоподъема.</p>
+                        <p style="margin: 0 0 16px 0; font-size: 13px;">Нажмите кнопку ниже, чтобы настроить ваше резюме для автоподъема.</p>
                         <button class="btn btn-primary btn-sm" onclick="addNewResume()">➕ Добавить резюме</button>
                     </div>
                 `;
                 return;
             }
 
-            resumes.forEach((resume, idx) => {
+            // Если ровно 1 резюме: карточка-сплит (параметры слева, логи справа)
+            if (resumes.length === 1) {
+                grid.className = 'resumes-grid mode-single';
+                const resume = resumes[0];
                 const card = document.createElement('div');
-                card.className = 'resume-card';
+                card.className = 'resume-card resume-card-single-split';
 
-                // Определение статуса
                 let statusClass = 'status-warning';
                 let statusText = resume.last_result || 'Ожидание';
                 if (resume.is_running) {
@@ -1296,13 +1406,115 @@ INDEX_HTML = """<!DOCTYPE html>
                     statusClass = 'status-error';
                 }
 
-                // Чипы расписания
                 const scheduleHtml = (resume.schedule || []).map(t => `
                     <span class="time-chip">
                         <span>${t}</span>
                         <button class="time-chip-del" onclick="removeScheduleTime('${resume.id}', '${t}')">×</button>
                     </span>
                 `).join('');
+
+                card.innerHTML = `
+                    <!-- Левая колонка: Параметры резюме -->
+                    <div class="resume-split-left">
+                        <div class="resume-top">
+                            <div class="resume-info">
+                                <input type="text" class="resume-name-input" value="${resume.name || 'Резюме'}" onchange="updateResumeName('${resume.id}', this.value)">
+                                <div class="resume-meta">
+                                    <span>ID: <code>${resume.id}</code></span>
+                                    <span>•</span>
+                                    <a href="${resume.url || '#'}" target="_blank" rel="noopener" class="resume-link">Открыть на HH ↗</a>
+                                </div>
+                            </div>
+                            <label class="switch-container">
+                                <input type="checkbox" class="switch-input" ${resume.enabled !== false ? 'checked' : ''} onchange="toggleResumeEnabled('${resume.id}', this.checked)">
+                                <div class="switch-track"><div class="switch-thumb"></div></div>
+                            </label>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" style="font-size: 11px;">Ссылка на резюме (URL)</label>
+                            <input type="text" class="form-input" style="font-size: 12px; padding: 6px 10px;" value="${resume.url || ''}" onchange="updateResumeUrl('${resume.id}', this.value)">
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
+                            <span class="status-badge ${statusClass}">${statusText}</span>
+                            <span style="color: var(--text-muted);">${resume.last_time ? resume.last_time : 'Никогда'}</span>
+                        </div>
+
+                        <div class="schedule-box">
+                            <div class="schedule-title">
+                                <span>Расписание автоподъема</span>
+                            </div>
+                            <div class="schedule-chips">
+                                ${scheduleHtml || '<span style="font-size: 11px; color: var(--text-muted);">Расписание не задано</span>'}
+                            </div>
+                            <div class="schedule-add-row">
+                                <input type="time" class="time-input" id="time-input-${resume.id}">
+                                <button class="btn btn-secondary btn-sm" onclick="addScheduleTime('${resume.id}')">➕</button>
+                            </div>
+                            <div class="presets-row">
+                                <button class="btn-preset" onclick="setSchedulePreset('${resume.id}', 4)">Каждые 4ч</button>
+                                <button class="btn-preset" onclick="setSchedulePreset('${resume.id}', 6)">Каждые 6ч</button>
+                                <button class="btn-preset" onclick="setSchedulePreset('${resume.id}', 8)">Каждые 8ч</button>
+                            </div>
+                        </div>
+
+                        <div class="resume-actions-row">
+                            <button class="btn btn-primary btn-sm" onclick="triggerUpdate('${resume.id}')" ${resume.is_running ? 'disabled' : ''}>
+                                ${resume.is_running ? '⏳ Запуск...' : '⚡ Поднять сейчас'}
+                            </button>
+                            <button class="btn btn-danger btn-sm" onclick="confirmDeleteResume('${resume.id}')" title="Удалить резюме">
+                                🗑️
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Правая колонка: Терминал логов во всю высоту -->
+                    <div class="resume-split-right">
+                        <div class="single-log-header">
+                            <span>📋 Терминал логов автоподъема</span>
+                            <span style="font-size: 11px; color: var(--text-muted);">Обновляется онлайн</span>
+                        </div>
+                        <div class="log-box single-log-box" id="log-${resume.id}">${escapeHtml(resume.log || 'Логи пока пусты.')}</div>
+                    </div>
+                `;
+
+                grid.appendChild(card);
+                
+                // Восстановление прокрутки
+                const logEl = document.getElementById(`log-${resume.id}`);
+                if (logEl && logScrollPosMap[resume.id] !== undefined) {
+                    logEl.scrollTop = logScrollPosMap[resume.id];
+                }
+                return;
+            }
+
+            // Если 2 и более резюме: 2 колонки, логи аккордеоном снизу карточки
+            grid.className = 'resumes-grid mode-multi';
+
+            resumes.forEach((resume) => {
+                const card = document.createElement('div');
+                card.className = 'resume-card';
+
+                let statusClass = 'status-warning';
+                let statusText = resume.last_result || 'Ожидание';
+                if (resume.is_running) {
+                    statusClass = 'status-running';
+                    statusText = '⏳ Выполняется...';
+                } else if (statusText.includes('УСПЕШНО')) {
+                    statusClass = 'status-success';
+                } else if (statusText.includes('Ошибка') || statusText.includes('Сбой')) {
+                    statusClass = 'status-error';
+                }
+
+                const scheduleHtml = (resume.schedule || []).map(t => `
+                    <span class="time-chip">
+                        <span>${t}</span>
+                        <button class="time-chip-del" onclick="removeScheduleTime('${resume.id}', '${t}')">×</button>
+                    </span>
+                `).join('');
+
+                const isLogOpen = !!openLogsMap[resume.id];
 
                 card.innerHTML = `
                     <div class="resume-top">
@@ -1320,19 +1532,16 @@ INDEX_HTML = """<!DOCTYPE html>
                         </label>
                     </div>
 
-                    <!-- URL input -->
                     <div class="form-group">
                         <label class="form-label" style="font-size: 11px;">Ссылка на резюме (URL)</label>
                         <input type="text" class="form-input" style="font-size: 12px; padding: 6px 10px;" value="${resume.url || ''}" onchange="updateResumeUrl('${resume.id}', this.value)">
                     </div>
 
-                    <!-- Статус -->
                     <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
                         <span class="status-badge ${statusClass}">${statusText}</span>
                         <span style="color: var(--text-muted);">${resume.last_time ? resume.last_time : 'Никогда'}</span>
                     </div>
 
-                    <!-- Расписание -->
                     <div class="schedule-box">
                         <div class="schedule-title">
                             <span>Расписание автоподъема</span>
@@ -1351,25 +1560,29 @@ INDEX_HTML = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- Действия и логи -->
                     <div class="resume-actions-row">
                         <div style="display: flex; gap: 8px;">
                             <button class="btn btn-primary btn-sm" onclick="triggerUpdate('${resume.id}')" ${resume.is_running ? 'disabled' : ''}>
-                                ${resume.is_running ? '⏳ Запуск...' : '⚡ Поднять сейчас'}
+                                ${resume.is_running ? '⏳ Запуск...' : '⚡ Поднять'}
                             </button>
-                            <button class="btn btn-secondary btn-sm" onclick="toggleLog('log-${resume.id}')">
-                                📋 Логи
+                            <button class="btn btn-secondary btn-sm" id="log-btn-${resume.id}" onclick="toggleLog('${resume.id}')">
+                                ${isLogOpen ? '📋 Логи ▲' : '📋 Логи ▼'}
                             </button>
                         </div>
-                        <button class="btn btn-danger btn-sm" onclick="confirmDeleteResume('${resume.id}')">
+                        <button class="btn btn-danger btn-sm" onclick="confirmDeleteResume('${resume.id}')" title="Удалить резюме">
                             🗑️
                         </button>
                     </div>
 
-                    <div class="log-box" id="log-${resume.id}">${resume.log ? escapeHtml(resume.log) : 'Логи пока пусты.'}</div>
+                    <div class="log-box ${isLogOpen ? 'open' : ''}" id="log-${resume.id}">${escapeHtml(resume.log || 'Логи пока пусты.')}</div>
                 `;
 
                 grid.appendChild(card);
+
+                const logEl = document.getElementById(`log-${resume.id}`);
+                if (logEl && logScrollPosMap[resume.id] !== undefined) {
+                    logEl.scrollTop = logScrollPosMap[resume.id];
+                }
             });
         }
 
@@ -1377,9 +1590,12 @@ INDEX_HTML = """<!DOCTYPE html>
             return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         }
 
-        function toggleLog(id) {
-            const el = document.getElementById(id);
-            if (el) el.classList.toggle('open');
+        function toggleLog(resumeId) {
+            openLogsMap[resumeId] = !openLogsMap[resumeId];
+            const box = document.getElementById(`log-${resumeId}`);
+            if (box) box.classList.toggle('open', openLogsMap[resumeId]);
+            const btn = document.getElementById(`log-btn-${resumeId}`);
+            if (btn) btn.innerHTML = openLogsMap[resumeId] ? '📋 Логи ▲' : '📋 Логи ▼';
         }
 
         function promptCreateAccount() {
@@ -1753,9 +1969,7 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             cfg_data = load_resumes_config()
             cron_log_path = os.path.join(LOGS_DIR, "cron_log.log")
             
-            # Обход всех аккаунтов и их резюме
             for acc in cfg_data.get("accounts", []):
-                # Маскирование пароля
                 auth_data = acc.get("auth", {})
                 real_pwd = auth_data.get("password", "")
                 if real_pwd:
@@ -1789,7 +2003,6 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                     item["log"] = log_content
                     item["is_running"] = resume_id in running_jobs
 
-            # Метаданные системы
             tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
             cfg_data["system"] = {
