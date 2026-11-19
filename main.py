@@ -317,34 +317,60 @@ class HHAutomation:
 
     def is_logged_in(self, target_url: str) -> bool:
         logger.info(f"Проверка статуса авторизации ({target_url})...")
-        for attempt in range(1, 4):
+        for attempt in range(1, 3):
             try:
-                self.page.goto(target_url, wait_until="commit", timeout=45000)
-                self.page.locator("body").wait_for(state="attached", timeout=30000)
+                self.page.goto(target_url, wait_until="commit", timeout=35000)
+                try:
+                    self.page.locator("body").wait_for(state="attached", timeout=15000)
+                except Exception:
+                    pass
                 self.page.wait_for_timeout(2000)
                 self._close_overlays_and_banners()
 
+                # Проверка кнопки 'Войти'
                 login_btn = self.page.locator('button:has-text("Войти"), a:has-text("Войти")').first
                 if login_btn.is_visible(timeout=3000):
                     logger.info("Кнопка 'Войти' обнаружена. Сессия не активна.")
                     return False
 
-                logger.info("Сессия валидна, авторизация подтверждена.")
+                # Проверка наличия элементов авторизованного пользователя
+                prof_loc = self.page.locator("[data-qa*='applicantProfile'], [data-qa*='mainmenu_applicant'], a[href*='/applicant/'], [data-qa*='resume']").first
+                if prof_loc.is_visible(timeout=3000):
+                    logger.info("Сессия валидна, личный кабинет подтвержден.")
+                    return True
+
+                logger.info("Кнопка 'Войти' отсутствует. Сессия подтверждена.")
                 return True
             except Exception as e:
                 err_str = str(e)
-                logger.warning(f"Ошибка проверки авторизации (попытка {attempt}/3): {err_str}")
-                if attempt < 3:
-                    self.page.wait_for_timeout(5000)
+                logger.warning(f"Ошибка проверки авторизации (попытка {attempt}/2): {err_str}")
+                if attempt < 2:
+                    self.page.wait_for_timeout(3000)
         return False
 
     def perform_login(self, account_name: str = ""):
         logger.info(f"Начало процесса входа для {self.email} (аккаунт: {account_name or self.account_id})...")
         try:
             self.page.goto("https://hh.ru/account/login?role=applicant", wait_until="commit", timeout=45000)
-            self.page.locator("body").wait_for(state="attached", timeout=30000)
+            try:
+                self.page.locator("body").wait_for(state="attached", timeout=15000)
+            except Exception:
+                pass
             self.page.wait_for_timeout(2000)
             self._close_overlays_and_banners()
+
+            # Защитная проверка: если нас уже перенаправило внутрь ЛК (сессия уже жива)
+            cur_url = self.page.url
+            if "login" not in cur_url and any(k in cur_url for k in ["applicant", "resume", "profile"]):
+                logger.info(f"Обнаружен автоматический редирект в личный кабинет ({cur_url}). Повторный логин не требуется!")
+                self.context.storage_state(path=self.auth_file)
+                return
+
+            prof_loc = self.page.locator("[data-qa*='applicantProfile'], [data-qa*='mainmenu_applicant'], a[href*='/applicant/resumes']").first
+            if prof_loc.is_visible(timeout=2000):
+                logger.info("Элементы личного кабинета уже доступны. Сессия активна!")
+                self.context.storage_state(path=self.auth_file)
+                return
 
             # Шаг 1: Нажатие стартовой кнопки 'Войти' (если на экране выбора типа аккаунта)
             try:
@@ -434,14 +460,12 @@ class HHAutomation:
 
         # Список селекторов для обнаружения кнопки 'Поднять в поиске'
         selectors = [
-            "[data-qa*='resume-update']",
-            "button:has-text('Поднять в поиске')",
-            "[data-qa='resume-update-button']",
             "button[data-qa*='resume-update']",
-            "button:has-text('поднять')",
+            "[data-qa='resume-update-button']",
+            "button:has-text('Поднять в поиске')",
             "span:has-text('Поднять в поиске')",
-            "div[data-qa='resume-update']",
-            "[data-qa*='update-button']",
+            "[data-qa*='resume-update'][role='button']",
+            "button:has-text('поднять')",
             "button[class*='update']"
         ]
 
@@ -457,16 +481,14 @@ class HHAutomation:
                 continue
 
         if button:
-            logger.info(f"Кнопка 'Поднять в поиске' доступна для {name}. Нажимаю реальным кликом с ожиданием ответа...")
+            logger.info(f"Кнопка 'Поднять в поиске' доступна для {name}. Нажимаю реальным кликом...")
             try:
-                with self.page.expect_response(lambda r: "resume" in r.url and r.request.method == "POST", timeout=10000):
-                    button.click(force=True, timeout=5000)
-                logger.info("Сетевой ответ на клик кнопки поднятия успешно получен.")
-            except Exception:
-                # Если сетевой запрос не перехвачен, делаем фолбэк-клик
-                button.click(force=True, timeout=5000)
-            
-            self.page.wait_for_timeout(3000)
+                button.click(force=True, timeout=10000)
+                logger.info("Клик по кнопке поднятия успешно выполнен.")
+            except Exception as ce:
+                logger.warning(f"Предупреждение при вызове click: {ce}")
+
+            self.page.wait_for_timeout(3500)
             self._close_overlays_and_banners()
 
             # Проверка изменения интерфейса
@@ -609,8 +631,10 @@ def run_update_for_resume(target_id: str = None, max_retries: int = 3):
 
                             success = hh.raise_resume(item)
                             if success:
+                                last_error = None
                                 break
                             else:
+                                last_error = None
                                 logger.info(f"Кнопка поднятия еще не доступна по времени (или резюме скрыто). Ретраи не требуются.")
                                 break
 
